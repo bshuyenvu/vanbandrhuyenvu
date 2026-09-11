@@ -1,0 +1,15 @@
+[Unit]
+Description=VBHC AI Incoming Reply Web
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mcp-soan-thao-vbhc
+EnvironmentFile=-/etc/vbhc-web.env
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/home/mcp-soan-thao-vbhc/venv/bin/python /home/mcp-soan-thao-vbhc/webapp/server.py --host 127.0.0.1 --port 8767
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
