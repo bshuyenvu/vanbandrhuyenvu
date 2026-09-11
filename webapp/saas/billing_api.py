@@ -10,7 +10,7 @@ from starlette.routing import Route
 from .api import current_user, org_role, platform_admin
 from .catalog import PLANS
 from .security import new_id
-from .store import adjust_wallet, audit, connect, one, set_subscription, wallet_for
+from .store import audit, connect
 
 
 def _json(data: dict[str, Any], status: int = 200) -> JSONResponse:
@@ -100,26 +100,51 @@ async def confirm_order(request: Request):
     if not admin or not platform_admin(admin):
         return _error("Chỉ Platform Admin được xác nhận thanh toán", 403)
     order_id = request.path_params["order_id"]
-    order = one("SELECT * FROM payment_orders WHERE id=?", (order_id,))
-    if not order:
-        return _error("Không tìm thấy đơn", 404)
-    if order["status"] == "paid":
-        return _json({"ok": True, "order_id": order_id, "status": "paid", "idempotent": True})
-    if order["status"] not in {"pending", "review"}:
-        return _error(f"Không thể xác nhận đơn ở trạng thái {order['status']}", 409)
-
     body = await request.json()
-    set_subscription(scope_type=order["scope_type"], scope_id=order["scope_id"], plan_id=order["plan_id"])
-    if order["scope_type"] == "user":
-        wallet = wallet_for(user_id=order["scope_id"])
-    else:
-        wallet = wallet_for(user_id=order["user_id"], organization_id=order["scope_id"])
-    credit_result = adjust_wallet(wallet_id=wallet["id"], delta=int(order["included_credits"]), event_type="plan_purchase", note=f"Paid order {order_id} • {order['plan_id']}")
+
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM payment_orders WHERE id=?", (order_id,)).fetchone()
+        if not row:
+            db.rollback()
+            return _error("Không tìm thấy đơn", 404)
+        order = dict(row)
+        if order["status"] == "paid":
+            db.rollback()
+            return _json({"ok": True, "order_id": order_id, "status": "paid", "idempotent": True})
+        if order["status"] not in {"pending", "review"}:
+            db.rollback()
+            return _error(f"Không thể xác nhận đơn ở trạng thái {order['status']}", 409)
+
+        # Lock order before changing subscription/wallet. A second confirmation cannot pass this update.
+        changed = db.execute("UPDATE payment_orders SET status='processing' WHERE id=? AND status IN ('pending','review')", (order_id,)).rowcount
+        if changed != 1:
+            db.rollback()
+            return _error("Đơn đang được xử lý bởi một phiên khác", 409)
+
+        db.execute("UPDATE subscriptions SET status='replaced' WHERE scope_type=? AND scope_id=? AND status='active'", (order["scope_type"],order["scope_id"]))
+        subscription_id = new_id("sub_")
+        db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status) VALUES(?,?,?,?,?)", (subscription_id,order["scope_type"],order["scope_id"],order["plan_id"],"active"))
+
+        wallet = db.execute("SELECT * FROM wallets WHERE scope_type=? AND scope_id=?", (order["scope_type"],order["scope_id"])).fetchone()
+        if wallet:
+            wallet_id = wallet["id"]
+            current_balance = int(wallet["balance_credits"] or 0)
+        else:
+            wallet_id = new_id("wal_")
+            current_balance = 0
+            db.execute("INSERT INTO wallets(id,scope_type,scope_id,balance_credits) VALUES(?,?,?,0)", (wallet_id,order["scope_type"],order["scope_id"]))
+
+        delta = int(order["included_credits"])
+        balance_after = current_balance + delta
+        db.execute("UPDATE wallets SET balance_credits=? WHERE id=?", (balance_after,wallet_id))
+        db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,reference_type,reference_id,note) VALUES(?,?,?,?,?,?,?,?)",
+                   (new_id("led_"),wallet_id,delta,balance_after,"plan_purchase","payment_order",order_id,f"Paid order {order_id} • {order['plan_id']}"))
         db.execute("UPDATE payment_orders SET status='paid',provider_reference=?,paid_at=CURRENT_TIMESTAMP WHERE id=?", (body.get("provider_reference"),order_id))
         db.commit()
-    audit(organization_id=order["scope_id"] if order["scope_type"]=="organization" else None,user_id=admin["id"],action="billing.order.paid",entity_type="payment_order",entity_id=order_id,before={"status":order["status"]},after={"status":"paid","plan_id":order["plan_id"],"credited":order["included_credits"]})
-    return _json({"ok": True, "order_id": order_id, "status": "paid", **credit_result})
+
+    audit(organization_id=order["scope_id"] if order["scope_type"]=="organization" else None,user_id=admin["id"],action="billing.order.paid",entity_type="payment_order",entity_id=order_id,before={"status":order["status"]},after={"status":"paid","plan_id":order["plan_id"],"credited":delta,"balance_after":balance_after})
+    return _json({"ok": True, "order_id": order_id, "status": "paid", "subscription_id": subscription_id, "wallet_id": wallet_id, "credited": delta, "balance_after": balance_after})
 
 
 def routes() -> list[Route]:
