@@ -61,7 +61,7 @@ class AIResult:
 
 
 class AIRouter:
-    """Gemini-first router, OpenAI fallback. Không phụ thuộc SDK riêng."""
+    """Gemini/OpenAI router. V2 cho phép Model Manager chọn model theo từng tác vụ."""
 
     def __init__(self) -> None:
         self.provider = os.getenv("VBHC_AI_PROVIDER", "auto").strip().lower()
@@ -78,7 +78,21 @@ class AIRouter:
         }
 
     def generate_json(self, *, system: str, prompt: str, file_b64: str | None = None,
-                      mime_type: str | None = None) -> AIResult:
+                      mime_type: str | None = None, preferred_provider: str | None = None,
+                      preferred_model: str | None = None) -> AIResult:
+        preferred = (preferred_provider or "").lower().strip()
+        if preferred in {"google", "gemini"}:
+            if not self.gemini_key:
+                raise AIError("Gemini chưa được cấu hình")
+            return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type,
+                                model=preferred_model or self.gemini_model)
+        if preferred == "openai":
+            if not self.openai_key:
+                raise AIError("OpenAI chưa được cấu hình")
+            return self._openai(system, prompt, model=preferred_model or self.openai_model)
+        if preferred in {"local", "private"}:
+            raise AIError("Provider private/local chưa được gắn runtime trong V2")
+
         if self.provider == "gemini":
             order = ["gemini"]
         elif self.provider == "openai":
@@ -89,17 +103,18 @@ class AIRouter:
         for provider in order:
             try:
                 if provider == "gemini" and self.gemini_key:
-                    return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type)
+                    return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type, model=self.gemini_model)
                 if provider == "openai" and self.openai_key:
-                    return self._openai(system, prompt)
+                    return self._openai(system, prompt, model=self.openai_model)
             except AIError as exc:
                 errors.append(f"{provider}: {exc}")
         if errors:
             raise AIError(" | ".join(errors))
         raise AIError("Chưa cấu hình GEMINI_API_KEY hoặc OPENAI_API_KEY")
 
-    def _gemini(self, system: str, prompt: str, *, file_b64: str | None, mime_type: str | None) -> AIResult:
-        url = "https://generativelanguage.googleapis.com/v1beta/models/" + f"{self.gemini_model}:generateContent"
+    def _gemini(self, system: str, prompt: str, *, file_b64: str | None,
+                mime_type: str | None, model: str) -> AIResult:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/" + f"{model}:generateContent"
         parts: list[dict[str, Any]] = [{"text": prompt}]
         if file_b64 and mime_type:
             parts.insert(0, {"inlineData": {"mimeType": mime_type, "data": file_b64}})
@@ -120,11 +135,11 @@ class AIRouter:
             "output_tokens": int(meta.get("candidatesTokenCount") or 0),
             "total_tokens": int(meta.get("totalTokenCount") or 0),
         }
-        return AIResult(_extract_json(text), "gemini", self.gemini_model, usage)
+        return AIResult(_extract_json(text), "google", model, usage)
 
-    def _openai(self, system: str, prompt: str) -> AIResult:
+    def _openai(self, system: str, prompt: str, *, model: str) -> AIResult:
         payload = {
-            "model": self.openai_model,
+            "model": model,
             "instructions": system + "\nChỉ trả về một JSON object hợp lệ, không dùng Markdown.",
             "input": prompt,
         }
@@ -148,4 +163,4 @@ class AIRouter:
             "output_tokens": int(meta.get("output_tokens") or 0),
             "total_tokens": int(meta.get("total_tokens") or 0),
         }
-        return AIResult(_extract_json(text), "openai", self.openai_model, usage)
+        return AIResult(_extract_json(text), "openai", model, usage)
