@@ -12,11 +12,14 @@ from docx_export import build_government_reply
 from government_docx import build_government_named_document
 from party_docx import build_party_reply
 from .api import current_user, org_role, platform_admin
+from .billing_api import routes as billing_routes
 from .document_types import get_document_type
 from .platform_ext_api import routes as platform_ext_routes
 from .workflow_api import routes as workflow_routes
 
-STATIC_ADMIN = Path(__file__).resolve().parents[1] / "static" / "admin-control.html"
+STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
+STATIC_ADMIN = STATIC_ROOT / "admin-control.html"
+STATIC_BILLING = STATIC_ROOT / "billing.html"
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -33,10 +36,18 @@ def _authorized(request: Request, body: dict[str, Any]) -> tuple[bool, JSONRespo
     return True, None
 
 
+async def _static(path: Path) -> Response:
+    if not path.is_file():
+        return _error("Thiếu giao diện", 500)
+    return FileResponse(str(path), media_type="text/html; charset=utf-8")
+
+
 async def admin_control(_: Request) -> Response:
-    if not STATIC_ADMIN.is_file():
-        return _error("Thiếu giao diện Admin Control", 500)
-    return FileResponse(str(STATIC_ADMIN), media_type="text/html; charset=utf-8")
+    return await _static(STATIC_ADMIN)
+
+
+async def billing_page(_: Request) -> Response:
+    return await _static(STATIC_BILLING)
 
 
 async def export_docx_v2(request: Request) -> Response:
@@ -84,8 +95,10 @@ async def export_docx_v2(request: Request) -> Response:
 def routes() -> list[Route]:
     result = [
         Route("/admin-control", admin_control, methods=["GET"]),
+        Route("/billing", billing_page, methods=["GET"]),
         Route("/api/v2/export/docx", export_docx_v2, methods=["POST"]),
     ]
     result.extend(workflow_routes())
     result.extend(platform_ext_routes())
+    result.extend(billing_routes())
     return result
