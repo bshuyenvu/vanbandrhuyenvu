@@ -1,6 +1,6 @@
 # Huyền Vũ Văn Bản AI
 
-**Production V2.3** — nền tảng quản lý văn bản đến/đi, workflow cơ quan/phòng-khoa, soạn & kiểm định AI, quản lý lượt/token/AI Credit, billing và hồ sơ đính kèm private.
+**Production V2.3.1** — nền tảng quản lý văn bản đến/đi, workflow cơ quan/phòng-khoa, soạn & kiểm định AI, quản lý lượt/token/AI Credit, billing và hồ sơ đính kèm private.
 
 - Web production: `vanban-ai.huyenvu.cloud`
 - Runtime nhẹ: Starlette + SQLite WAL; schema PostgreSQL đã chuẩn bị trong `webapp/saas/schema.sql`.
@@ -9,6 +9,7 @@
 - Quản trị: Platform Admin, RBAC cơ quan, phòng/khoa, thành viên, workflow, audit log, model manager và billing.
 - Security V2.3: session revocation, brute-force guard, request-size guard, security headers/CSP/HSTS và kiểm tra chữ ký tệp đính kèm riêng tư.
 - Tiếp nhận V2.3: OCR nhiều tệp theo hàng đợi, SHA-256 chống trùng trước AI, cảnh báo hồ sơ gần trùng, đề xuất phòng/khoa và ghi sổ nguyên khối.
+- Điều hành V2.3.1: bảng công việc theo vai trò, cảnh báo 24/48 giờ và quá hạn, hàng chờ duyệt/phát hành, khóa thao tác ngoài phạm vi được giao.
 
 Chi tiết V2 xem `doc/HUYEN-VU-VAN-BAN-AI-V2.md` và `webapp/README.md`. Phần bên dưới là tài liệu **legacy V1/MCP** vẫn được giữ để tương thích công cụ cũ.
 
@@ -178,3 +179,11 @@ Server `vbhc` dùng python-docx → KHÔNG support tracked changes. Cần tracke
 ## License
 
 MIT
+
+## V2.3.1 — Công việc, hạn xử lý và duyệt theo vai trò
+
+- Trang `/tasks` gom công việc theo Chờ giao, Đang xử lý, Chờ duyệt, Chờ phát hành và Hoàn tất.
+- Cảnh báo hạn dùng múi giờ Việt Nam: Quá hạn, còn tối đa 24 giờ và còn tối đa 48 giờ.
+- Chuyên viên chỉ thấy và thao tác hồ sơ do mình tạo hoặc được giao; trưởng phòng giới hạn theo phòng/khoa; Văn thư, Lãnh đạo và Quản trị theo đúng quyền cơ quan.
+- Dashboard hiển thị nhanh số hồ sơ quá hạn, sắp hạn và chờ duyệt.
+- API chi tiết, danh sách, tệp đính kèm, phiên bản và chuyển trạng thái đều kiểm tra phạm vi hồ sơ ở phía server.

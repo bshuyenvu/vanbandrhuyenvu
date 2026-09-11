@@ -101,3 +101,19 @@ Tệp gốc và tệp đính kèm được lưu ngoài Git tại `VBHC_FILE_ROOT
 - AI phân loại loại văn bản, mức khẩn và đề xuất đơn vị xử lý; backend ánh xạ đề xuất vào danh mục phòng/khoa và có thể tham chiếu lịch sử xử lý.
 - API `intake/commit` kiểm tra định dạng tệp, quota SSD, trùng lặp, loại văn bản và quyền phân công trước khi tạo hồ sơ + tệp gốc + phân công trong một thao tác nghiệp vụ.
 - Ghi sổ nguyên khối giúp tránh trạng thái văn bản đã tạo nhưng tệp gốc tải lên thất bại.
+
+## V2.3.1 — Công việc, hạn xử lý và trình duyệt
+
+- Trang `/tasks` gom công việc theo Chờ giao / Đang xử lý / Chờ duyệt / Chờ phát hành / Hoàn tất.
+- Hạn xử lý được tính theo múi giờ Việt Nam và cảnh báo Quá hạn / còn ≤24 giờ / còn ≤48 giờ.
+- Dashboard hiển thị số việc quá hạn, sắp hạn và chờ duyệt của phạm vi người dùng được quyền xem.
+- Chuyên viên chỉ xem và chuyển trạng thái hồ sơ mình được giao; Trưởng phòng/khoa theo phạm vi đơn vị; Lãnh đạo có hàng chờ duyệt; Văn thư có hàng chờ phát hành.
+- API không dựa vào việc ẩn nút trên giao diện: kiểm tra quyền được thực hiện lại ở backend trước mọi thay đổi trạng thái.
+
+## V2.3.1 — Công việc, hạn xử lý và duyệt theo vai trò
+
+- Trang `/tasks` gom công việc theo Chờ giao, Đang xử lý, Chờ duyệt, Chờ phát hành và Hoàn tất.
+- Cảnh báo hạn dùng múi giờ Việt Nam: Quá hạn, còn tối đa 24 giờ và còn tối đa 48 giờ.
+- Chuyên viên chỉ thấy và thao tác hồ sơ do mình tạo hoặc được giao; trưởng phòng giới hạn theo phòng/khoa; Văn thư, Lãnh đạo và Quản trị theo đúng quyền cơ quan.
+- Dashboard hiển thị nhanh số hồ sơ quá hạn, sắp hạn và chờ duyệt.
+- API chi tiết, danh sách, tệp đính kèm, phiên bản và chuyển trạng thái đều kiểm tra phạm vi hồ sơ ở phía server.
