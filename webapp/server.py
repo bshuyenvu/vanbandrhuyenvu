@@ -29,6 +29,7 @@ from saas.store import active_plan, all_rows, charge_ai_usage, ensure_credit, on
 from saas.usage import ensure_usage_quota  # noqa: E402
 from saas.usage_api import routes as usage_routes  # noqa: E402
 from saas.storage_api import routes as storage_routes  # noqa: E402
+from saas.intake_api import routes as intake_routes  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
@@ -218,7 +219,7 @@ async def reply_workbench(_: Request) -> Response:
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.2.1-production", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.3.0-production", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -389,6 +390,7 @@ routes.extend(admin_routes())
 routes.extend(export_routes())
 routes.extend(usage_routes())
 routes.extend(storage_routes())
+routes.extend(intake_routes())
 app = Starlette(routes=routes)
 app.add_middleware(ProductionSecurityMiddleware)
 
