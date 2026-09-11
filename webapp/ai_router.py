@@ -69,12 +69,14 @@ class AIRouter:
         self.openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.gemini_model = os.getenv("VBHC_GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
         self.openai_model = os.getenv("VBHC_OPENAI_MODEL", "gpt-5.6-luna").strip()
+        self.max_output_tokens = max(256, min(16384, int(os.getenv("VBHC_AI_MAX_OUTPUT_TOKENS", "4096"))))
 
     def status(self) -> dict[str, Any]:
         return {
             "mode": self.provider,
             "gemini": {"configured": bool(self.gemini_key), "model": self.gemini_model},
             "openai": {"configured": bool(self.openai_key), "model": self.openai_model},
+            "max_output_tokens": self.max_output_tokens,
         }
 
     def generate_json(self, *, system: str, prompt: str, file_b64: str | None = None,
@@ -121,7 +123,10 @@ class AIRouter:
         payload = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "maxOutputTokens": self.max_output_tokens,
+            },
         }
         raw = _post_json(url, payload, {"Content-Type": "application/json", "x-goog-api-key": self.gemini_key})
         try:
@@ -142,6 +147,7 @@ class AIRouter:
             "model": model,
             "instructions": system + "\nChỉ trả về một JSON object hợp lệ, không dùng Markdown.",
             "input": prompt,
+            "max_output_tokens": self.max_output_tokens,
         }
         raw = _post_json(
             "https://api.openai.com/v1/responses", payload,
