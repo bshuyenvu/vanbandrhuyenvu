@@ -22,6 +22,7 @@ from party_docx import build_party_reply  # noqa: E402
 from saas.admin_api import routes as admin_routes  # noqa: E402
 from saas.api import current_user, org_role, platform_admin, routes as saas_routes  # noqa: E402
 from saas.catalog import PROJECT_NAME  # noqa: E402
+from saas.export_api import routes as export_routes  # noqa: E402
 from saas.model_manager import choose_model  # noqa: E402
 from saas.store import active_plan, all_rows, charge_ai_usage, ensure_credit, one, wallet_for  # noqa: E402
 
@@ -62,10 +63,6 @@ def _configured_registry() -> dict[str, dict[str, Any]]:
             continue
         if provider == "openai" and not AI.openai_key:
             continue
-        if provider in {"local", "private"}:
-            # Reserved for a future local/private runtime.
-            registry[row["id"]] = {**row, "enabled": bool(row.get("enabled"))}
-            continue
         registry[row["id"]] = {**row, "enabled": bool(row.get("enabled"))}
     return registry
 
@@ -74,7 +71,7 @@ def _ai_context(request: Request, body: dict[str, Any], task_type: str) -> dict[
     user = current_user(request)
     if not user:
         if os.getenv("VBHC_ALLOW_ANON_AI", "false").lower() in {"1", "true", "yes"}:
-            return {"anonymous": True, "choice": None, "billing": None, "organization_id": None, "department_id": None}
+            return {"anonymous": True, "choice": None, "organization_id": None, "department_id": None}
         raise AccessError("Vui lòng đăng nhập để sử dụng AI", 401)
 
     org_id = str(body.get("organization_id") or "").strip() or None
@@ -152,7 +149,24 @@ def _run_ai(*, ctx: dict[str, Any], task_type: str, system: str, prompt: str,
 
 async def home(_: Request) -> Response:
     if STATIC_CONSOLE.is_file():
-        return FileResponse(str(STATIC_CONSOLE), media_type="text/html; charset=utf-8")
+        html = STATIC_CONSOLE.read_text(encoding="utf-8")
+        state_patch = """<script>
+(function(){
+ const el=document.getElementById('orgSelect');
+ if(!el)return;
+ el.addEventListener('change',function(){
+   if(this.value)localStorage.setItem('hv_vbai_active_org',this.value);
+   else localStorage.removeItem('hv_vbai_active_org');
+ });
+ setTimeout(function(){
+   const saved=localStorage.getItem('hv_vbai_active_org');
+   if(saved && el.querySelector('option[value="'+saved+'"]')){
+     el.value=saved; el.dispatchEvent(new Event('change'));
+   }
+ },350);
+})();
+</script>"""
+        return HTMLResponse(html.replace("</body>", state_patch + "</body>"))
     return _err("Thiếu webapp/static/console.html", 500)
 
 
@@ -170,8 +184,8 @@ async def reply_workbench(_: Request) -> Response:
    try{
      if(typeof opts.body==='string' && String(url).startsWith('/api/')){
        const data=JSON.parse(opts.body); const org=localStorage.getItem('hv_vbai_active_org');
-       if(org && !data.organization_id) data.organization_id=org;
-       if(org && !data.billing_scope) data.billing_scope='organization';
+       if(org && !data.organization_id)data.organization_id=org;
+       if(org && !data.billing_scope)data.billing_scope='organization';
        opts.body=JSON.stringify(data);
      }
    }catch(e){}
@@ -315,7 +329,7 @@ async def export_docx(request: Request) -> Response:
         standard = str(body.get("standard") or "government").strip().lower()
         document_type = str(body.get("document_type") or body.get("reply_type") or "Công văn").strip().lower()
         if "công văn" not in document_type:
-            return _err("V2 hiện chỉ xuất DOCX đã kiểm định cho Công văn/phúc đáp; các builder thể loại khác đang được mở rộng riêng.", 422)
+            return _err("Endpoint tương thích này chỉ xuất Công văn/phúc đáp. Dùng /api/v2/export/docx cho các thể loại V2.", 422)
         if standard == "government":
             raw = build_government_reply(body)
         elif standard == "party":
@@ -343,6 +357,7 @@ routes = [
 ]
 routes.extend(saas_routes())
 routes.extend(admin_routes())
+routes.extend(export_routes())
 app = Starlette(routes=routes)
 
 
