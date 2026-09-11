@@ -25,6 +25,8 @@ from saas.catalog import PROJECT_NAME  # noqa: E402
 from saas.export_api import routes as export_routes  # noqa: E402
 from saas.model_manager import choose_model  # noqa: E402
 from saas.store import active_plan, all_rows, charge_ai_usage, ensure_credit, one, wallet_for  # noqa: E402
+from saas.usage import ensure_usage_quota  # noqa: E402
+from saas.usage_api import routes as usage_routes  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
@@ -92,10 +94,13 @@ def _ai_context(request: Request, body: dict[str, Any], task_type: str) -> dict[
     if billing_scope == "organization" and org_id:
         plan_id = active_plan("organization", org_id)
         wallet = wallet_for(user_id=user["id"], organization_id=org_id)
+        quota_org_id = org_id
     else:
         plan_id = active_plan("user", user["id"])
         wallet = wallet_for(user_id=user["id"])
+        quota_org_id = None
     ensure_credit(wallet, int(os.getenv("VBHC_MIN_AI_CREDIT", "50")))
+    ensure_usage_quota(user_id=user["id"], plan_id=plan_id, wallet=wallet, organization_id=quota_org_id)
 
     choice = choose_model(
         task_type=task_type,
@@ -153,17 +158,26 @@ async def home(_: Request) -> Response:
         state_patch = """<script>
 (function(){
  const el=document.getElementById('orgSelect');
- if(!el)return;
- el.addEventListener('change',function(){
-   if(this.value)localStorage.setItem('hv_vbai_active_org',this.value);
-   else localStorage.removeItem('hv_vbai_active_org');
- });
- setTimeout(function(){
-   const saved=localStorage.getItem('hv_vbai_active_org');
-   if(saved && el.querySelector('option[value="'+saved+'"]')){
-     el.value=saved; el.dispatchEvent(new Event('change'));
-   }
- },350);
+ if(el){
+   el.addEventListener('change',function(){
+     if(this.value)localStorage.setItem('hv_vbai_active_org',this.value);
+     else localStorage.removeItem('hv_vbai_active_org');
+   });
+   setTimeout(function(){
+     const saved=localStorage.getItem('hv_vbai_active_org');
+     if(saved && el.querySelector('option[value="'+saved+'"]')){
+       el.value=saved; el.dispatchEvent(new Event('change'));
+     }
+   },350);
+ }
+ const plans=document.querySelector('[data-view="plans"]');
+ if(plans && !document.getElementById('usageNav')){
+   const b=document.createElement('button'); b.id='usageNav'; b.className='nav';
+   b.innerHTML='◉ Lượt & Token của tôi'; b.onclick=function(){location.href='/usage'};
+   plans.insertAdjacentElement('afterend',b);
+ }
+ const credit=document.getElementById('creditPill');
+ if(credit){credit.style.cursor='pointer';credit.title='Xem lượt, token và AI Credit';credit.onclick=function(){location.href='/usage'}}
 })();
 </script>"""
         return HTMLResponse(html.replace("</body>", state_patch + "</body>"))
@@ -197,7 +211,7 @@ async def reply_workbench(_: Request) -> Response:
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.0-wip", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.1-usage", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -358,6 +372,7 @@ routes = [
 routes.extend(saas_routes())
 routes.extend(admin_routes())
 routes.extend(export_routes())
+routes.extend(usage_routes())
 app = Starlette(routes=routes)
 
 

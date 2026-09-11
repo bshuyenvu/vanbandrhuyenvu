@@ -9,26 +9,31 @@ PROJECT_NAME = "Huyền Vũ Văn Bản AI"
 PLANS = {
     "free": {
         "name": "Free", "price_vnd": 0, "included_credits": 10000,
+        "monthly_requests": 30, "monthly_tokens": 200000,
         "max_members": 1, "tiers": ["economy"],
         "features": ["personal_workspace", "incoming_outgoing_basic", "ai_draft_limited"]
     },
     "personal": {
         "name": "Personal", "price_vnd": 79000, "included_credits": 90000,
+        "monthly_requests": 300, "monthly_tokens": 2000000,
         "max_members": 1, "tiers": ["economy", "standard"],
         "features": ["personal_workspace", "document_versions", "legal_rag_basic", "priority_queue"]
     },
     "professional": {
         "name": "Professional", "price_vnd": 179000, "included_credits": 240000,
+        "monthly_requests": 1500, "monthly_tokens": 8000000,
         "max_members": 1, "tiers": ["economy", "standard", "advanced"],
         "features": ["advanced_review", "legal_rag", "model_choice", "export_templates"]
     },
     "team": {
         "name": "Team", "price_vnd": 499000, "included_credits": 650000,
+        "monthly_requests": 5000, "monthly_tokens": 25000000,
         "max_members": 10, "tiers": ["economy", "standard", "advanced"],
         "features": ["departments", "shared_wallet", "assignments", "audit", "admin_console"]
     },
     "organization": {
         "name": "Organization", "price_vnd": 0, "included_credits": 0,
+        "monthly_requests": None, "monthly_tokens": None,
         "max_members": None, "tiers": ["economy", "standard", "advanced", "private"],
         "features": ["multi_department", "workflow", "budget_guard", "sso_ready", "private_policy"]
     },
