@@ -34,6 +34,6 @@ Mở reverse proxy domain vào `127.0.0.1:8767` để dùng giao diện.
 
 ## Giới hạn an toàn V1
 
-- Xuất DOCX khối Nhà nước tái sử dụng engine Nghị định 30 đang có.
-- Xuất DOCX văn bản Đảng hiện hỗ trợ luồng **công văn/phúc đáp**, áp dụng rule pack `party_hd05_2026.json` theo Quy định 399-QĐ/TW + Hướng dẫn 05-HD/VPTW ngày 27/05/2026. Các thể loại Đảng khác cần thêm template/rule riêng trước khi mở rộng.
+- Xuất DOCX V1 chỉ mở cho thể loại **công văn/phúc đáp** đã có builder kiểm định; nếu yêu cầu là Báo cáo/Tờ trình hoặc loại khác, backend sẽ chặn xuất bằng template sai. Khối Nhà nước tái sử dụng engine Nghị định 30 đang có.
+- Xuất DOCX văn bản Đảng hỗ trợ luồng **công văn/phúc đáp**, áp dụng rule pack `party_hd05_2026.json` theo Quy định 399-QĐ/TW + Hướng dẫn 05-HD/VPTW ngày 27/05/2026. Các thể loại Đảng khác cần thêm template/rule riêng trước khi mở rộng.
 - Khi dùng Gemini/OpenAI, nội dung gửi tới API của nhà cung cấp AI. Với tài liệu mật/nội bộ, cần chính sách dữ liệu và lớp xác thực/reverse proxy phù hợp trước khi mở ra Internet.
