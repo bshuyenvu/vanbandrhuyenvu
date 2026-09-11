@@ -36,6 +36,30 @@ def _cost_score(model: dict[str, Any]) -> float:
     return (inp + out * 0.35) * mult
 
 
+def _within_daily_budget(model_id: str, model: dict[str, Any]) -> bool:
+    budget = model.get("daily_budget_usd")
+    if budget is None or float(budget or 0) <= 0:
+        return True
+    try:
+        from .store import one
+        row = one("SELECT COALESCE(SUM(provider_cost_usd),0) spent FROM ai_usage WHERE model_id=? AND date(created_at)=date('now')", (model_id,))
+        spent = float((row or {}).get("spent") or 0)
+        return spent < float(budget)
+    except Exception:
+        # If an administrator configured a hard budget, fail closed when spend cannot be read.
+        return False
+
+
+def _eligible(model_id: str, model: dict[str, Any], *, target: str, data_policy: str) -> bool:
+    if not bool(model.get("enabled", True)):
+        return False
+    if str(model.get("tier", "economy")) != target:
+        return False
+    if data_policy == "restricted" and str(model.get("provider")) not in {"local", "private"}:
+        return False
+    return _within_daily_budget(model_id, model)
+
+
 def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
                  requested_tier: str | None = None, registry: dict[str, dict[str, Any]] | None = None) -> ModelChoice:
     registry = registry or MODEL_DEFAULTS
@@ -48,23 +72,14 @@ def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
     elif target not in allowed:
         target = max((t for t in TIER_ORDER if t in allowed), key=TIER_ORDER.index, default="economy")
 
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for model_id, model in registry.items():
-        if not bool(model.get("enabled", True)):
-            continue
-        tier = str(model.get("tier", "economy"))
-        if tier != target:
-            continue
-        if data_policy == "restricted" and str(model.get("provider")) not in {"local", "private"}:
-            continue
-        candidates.append((model_id, model))
+    candidates = [(model_id, model) for model_id, model in registry.items() if _eligible(model_id, model, target=target, data_policy=data_policy)]
 
     if not candidates and target != "economy" and "economy" in allowed and data_policy != "restricted":
-        candidates = [(mid, m) for mid, m in registry.items() if bool(m.get("enabled", True)) and m.get("tier") == "economy"]
         target = "economy"
+        candidates = [(model_id, model) for model_id, model in registry.items() if _eligible(model_id, model, target=target, data_policy=data_policy)]
 
     if not candidates:
-        raise ValueError("Không có model phù hợp với gói sử dụng và chính sách dữ liệu")
+        raise ValueError("Không có model khả dụng: kiểm tra gói, chính sách dữ liệu, trạng thái model hoặc daily budget")
 
     candidates.sort(key=lambda item: _cost_score(item[1]))
     model_id, model = candidates[0]
@@ -74,7 +89,7 @@ def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
         model_name=str(model.get("model_name")),
         display_name=str(model.get("display_name")),
         tier=target,
-        reason=f"task={task_type}; plan={plan_id}; policy={data_policy}; strategy=lowest_cost_in_tier",
+        reason=f"task={task_type}; plan={plan_id}; policy={data_policy}; strategy=lowest_cost_in_tier; budget=ok",
     )
 
 
@@ -84,13 +99,14 @@ def public_model_catalog(plan_id: str, registry: dict[str, dict[str, Any]] | Non
     registry = registry or MODEL_DEFAULTS
     result = []
     for model_id, model in registry.items():
-        if model.get("tier") not in allowed or not bool(model.get("enabled", True)):
+        tier = str(model.get("tier", "economy"))
+        if tier not in allowed or not _eligible(model_id, model, target=tier, data_policy="internal"):
             continue
         result.append({
             "id": model_id,
             "display_name": model.get("display_name"),
             "provider": model.get("provider"),
-            "tier": model.get("tier"),
+            "tier": tier,
             "cost_score": _cost_score(model),
         })
     return sorted(result, key=lambda item: (TIER_ORDER.index(item["tier"]), item["cost_score"]))
