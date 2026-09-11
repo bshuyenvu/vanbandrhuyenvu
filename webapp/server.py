@@ -219,7 +219,7 @@ async def reply_workbench(_: Request) -> Response:
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.3.0-production", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.3.1-production", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:

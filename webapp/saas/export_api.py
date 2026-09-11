@@ -16,6 +16,7 @@ from .billing_api import routes as billing_routes
 from .document_types import get_document_type
 from .platform_ext_api import routes as platform_ext_routes
 from .workflow_api import routes as workflow_routes
+from .work_api import routes as work_routes
 
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
 STATIC_ADMIN = STATIC_ROOT / "admin-control.html"
@@ -23,6 +24,7 @@ STATIC_BILLING = STATIC_ROOT / "billing.html"
 STATIC_DIGITIZE = STATIC_ROOT / "digitize.html"
 STATIC_REGISTER = STATIC_ROOT / "register.html"
 STATIC_SLIP = STATIC_ROOT / "processing-slip.html"
+STATIC_TASKS = STATIC_ROOT / "tasks.html"
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -63,6 +65,10 @@ async def register_page(_: Request) -> Response:
 
 async def processing_slip_page(_: Request) -> Response:
     return await _static(STATIC_SLIP)
+
+
+async def tasks_page(_: Request) -> Response:
+    return await _static(STATIC_TASKS)
 
 
 async def export_docx_v2(request: Request) -> Response:
@@ -114,9 +120,11 @@ def routes() -> list[Route]:
         Route("/digitize", digitize_page, methods=["GET"]),
         Route("/register", register_page, methods=["GET"]),
         Route("/processing-slip", processing_slip_page, methods=["GET"]),
+        Route("/tasks", tasks_page, methods=["GET"]),
         Route("/api/v2/export/docx", export_docx_v2, methods=["POST"]),
     ]
     result.extend(workflow_routes())
+    result.extend(work_routes())
     result.extend(platform_ext_routes())
     result.extend(billing_routes())
     return result

@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from .api import current_user, require_org_permission
+from .api import current_user, org_role, platform_admin, require_org_permission
 from .security import new_id
 from .storage import ensure_storage_capacity
 from .store import all_rows, audit, connect, execute, one
@@ -108,10 +108,34 @@ def init_workflow_schema() -> None:
         db.commit()
 
 
+def can_access_document(user: dict[str, Any], org_id: str, doc_id: str, *, write: bool = False) -> bool:
+    if platform_admin(user):
+        return True
+    role = org_role(user["id"], org_id)
+    if not role:
+        return False
+    if role in {"organization_owner", "organization_admin", "records_clerk", "leader", "auditor"}:
+        return not write or role not in {"auditor"}
+    membership = one("SELECT department_id FROM memberships WHERE organization_id=? AND user_id=? AND status='active' LIMIT 1", (org_id,user["id"])) or {}
+    department_id = membership.get("department_id")
+    doc = one("SELECT owner_user_id,department_id FROM documents WHERE id=? AND organization_id=?", (doc_id,org_id))
+    if not doc:
+        return False
+    if doc.get("owner_user_id") == user["id"]:
+        return True
+    if role == "department_head" and department_id:
+        if doc.get("department_id") == department_id:
+            return True
+        return bool(one("SELECT id FROM document_assignments WHERE document_id=? AND organization_id=? AND department_id=? LIMIT 1", (doc_id,org_id,department_id)))
+    if role == "member":
+        return bool(one("SELECT id FROM document_assignments WHERE document_id=? AND organization_id=? AND assignee_user_id=? LIMIT 1", (doc_id,org_id,user["id"])))
+    return False
+
+
 async def document_detail(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
-    if not user or not require_org_permission(user, org_id, "document.read")[0]:
+    if not user or not can_access_document(user, org_id, doc_id):
         return _error("Không có quyền xem văn bản", 403)
     doc = one("SELECT * FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id))
     if not doc:
@@ -138,8 +162,8 @@ async def document_detail(request: Request):
 async def update_document(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
-    if not user or not require_org_permission(user, org_id, "document.create")[0]:
-        return _error("Không có quyền cập nhật văn bản", 403)
+    if not user or not require_org_permission(user, org_id, "document.create")[0] or not can_access_document(user, org_id, doc_id, write=True):
+        return _error("Không có quyền cập nhật văn bản này", 403)
     current = one("SELECT * FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id))
     if not current:
         return _error("Không tìm thấy văn bản", 404)
@@ -174,8 +198,8 @@ async def update_document(request: Request):
 async def upload_attachment(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
-    if not user or not require_org_permission(user, org_id, "document.version")[0]:
-        return _error("Không có quyền đính kèm tệp", 403)
+    if not user or not require_org_permission(user, org_id, "document.version")[0] or not can_access_document(user, org_id, doc_id, write=True):
+        return _error("Không có quyền đính kèm tệp vào văn bản này", 403)
     if not one("SELECT id FROM documents WHERE id=? AND organization_id=?", (doc_id,org_id)):
         return _error("Không tìm thấy văn bản", 404)
     try:
@@ -244,8 +268,8 @@ async def download_attachment(request: Request):
 async def assign_document(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
-    if not user or not require_org_permission(user, org_id, "document.assign")[0]:
-        return _error("Không có quyền giao xử lý văn bản", 403)
+    if not user or not require_org_permission(user, org_id, "document.assign")[0] or not can_access_document(user, org_id, doc_id, write=True):
+        return _error("Không có quyền giao xử lý văn bản này", 403)
     doc = one("SELECT id,status FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id))
     if not doc:
         return _error("Không tìm thấy văn bản", 404)
@@ -289,6 +313,8 @@ async def transition_document(request: Request):
     permission = "document.approve" if target in {"approved", "rejected"} else "document.issue" if target == "issued" else "document.create"
     if not require_org_permission(user, org_id, permission)[0]:
         return _error(f"Không có quyền thực hiện trạng thái {target}", 403)
+    if permission == "document.create" and not can_access_document(user, org_id, doc_id, write=True):
+        return _error("Bạn không được giao xử lý văn bản này", 403)
     execute("UPDATE documents SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (target, doc_id))
     audit(organization_id=org_id,user_id=user["id"],action=f"document.{target}",entity_type="document",entity_id=doc_id,before={"status":current},after={"status":target,"note":body.get("note")})
     return _json({"ok": True, "document_id": doc_id, "status": target})
@@ -297,8 +323,8 @@ async def transition_document(request: Request):
 async def add_version(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
-    if not user or not require_org_permission(user, org_id, "document.version")[0]:
-        return _error("Không có quyền tạo phiên bản văn bản", 403)
+    if not user or not require_org_permission(user, org_id, "document.version")[0] or not can_access_document(user, org_id, doc_id, write=True):
+        return _error("Không có quyền tạo phiên bản cho văn bản này", 403)
     if not one("SELECT id FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id)):
         return _error("Không tìm thấy văn bản", 404)
     body = await request.json()

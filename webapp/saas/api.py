@@ -311,7 +311,10 @@ async def add_member(request: Request):
 async def list_documents(request: Request):
     user = current_user(request)
     org_id = request.path_params["org_id"]
-    if not user or not require_org_permission(user,org_id,"document.read")[0]:
+    if not user:
+        return _error("Chưa đăng nhập", 401)
+    role = "platform_super_admin" if platform_admin(user) else org_role(user["id"], org_id)
+    if not role or role in {"billing_admin", "viewer"}:
         return _error("Không có quyền xem văn bản", 403)
     direction = str(request.query_params.get("direction") or "").strip()
     status = str(request.query_params.get("status") or "").strip()
@@ -323,6 +326,18 @@ async def list_documents(request: Request):
         limit = 200
     clauses = ["organization_id=?"]
     params: list[Any] = [org_id]
+    if role == "department_head":
+        membership = one("SELECT department_id FROM memberships WHERE organization_id=? AND user_id=? AND status='active' LIMIT 1", (org_id,user["id"])) or {}
+        dep_id = membership.get("department_id")
+        if not dep_id:
+            clauses.append("owner_user_id=?")
+            params.append(user["id"])
+        else:
+            clauses.append("(owner_user_id=? OR department_id=? OR id IN (SELECT document_id FROM document_assignments WHERE organization_id=? AND department_id=?))")
+            params.extend([user["id"], dep_id, org_id, dep_id])
+    elif role == "member":
+        clauses.append("(owner_user_id=? OR id IN (SELECT document_id FROM document_assignments WHERE organization_id=? AND assignee_user_id=?))")
+        params.extend([user["id"], org_id, user["id"]])
     if direction:
         if direction not in {"incoming","outgoing","internal"}:
             return _error("direction không hợp lệ")
