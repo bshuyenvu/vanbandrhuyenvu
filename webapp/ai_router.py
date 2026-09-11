@@ -57,6 +57,7 @@ class AIResult:
     data: dict[str, Any]
     provider: str
     model: str
+    usage: dict[str, int]
 
 
 class AIRouter:
@@ -76,22 +77,14 @@ class AIRouter:
             "openai": {"configured": bool(self.openai_key), "model": self.openai_model},
         }
 
-    def generate_json(
-        self,
-        *,
-        system: str,
-        prompt: str,
-        file_b64: str | None = None,
-        mime_type: str | None = None,
-    ) -> AIResult:
-        order: list[str]
+    def generate_json(self, *, system: str, prompt: str, file_b64: str | None = None,
+                      mime_type: str | None = None) -> AIResult:
         if self.provider == "gemini":
             order = ["gemini"]
         elif self.provider == "openai":
             order = ["openai"]
         else:
             order = ["gemini", "openai"]
-
         errors: list[str] = []
         for provider in order:
             try:
@@ -106,10 +99,7 @@ class AIRouter:
         raise AIError("Chưa cấu hình GEMINI_API_KEY hoặc OPENAI_API_KEY")
 
     def _gemini(self, system: str, prompt: str, *, file_b64: str | None, mime_type: str | None) -> AIResult:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.gemini_model}:generateContent"
-        )
+        url = "https://generativelanguage.googleapis.com/v1beta/models/" + f"{self.gemini_model}:generateContent"
         parts: list[dict[str, Any]] = [{"text": prompt}]
         if file_b64 and mime_type:
             parts.insert(0, {"inlineData": {"mimeType": mime_type, "data": file_b64}})
@@ -118,16 +108,19 @@ class AIRouter:
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"responseMimeType": "application/json"},
         }
-        raw = _post_json(
-            url,
-            payload,
-            {"Content-Type": "application/json", "x-goog-api-key": self.gemini_key},
-        )
+        raw = _post_json(url, payload, {"Content-Type": "application/json", "x-goog-api-key": self.gemini_key})
         try:
             text = raw["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError) as exc:
             raise AIError(f"Gemini response không đúng cấu trúc: {raw}") from exc
-        return AIResult(_extract_json(text), "gemini", self.gemini_model)
+        meta = raw.get("usageMetadata") or {}
+        usage = {
+            "input_tokens": int(meta.get("promptTokenCount") or 0),
+            "cached_tokens": int(meta.get("cachedContentTokenCount") or 0),
+            "output_tokens": int(meta.get("candidatesTokenCount") or 0),
+            "total_tokens": int(meta.get("totalTokenCount") or 0),
+        }
+        return AIResult(_extract_json(text), "gemini", self.gemini_model, usage)
 
     def _openai(self, system: str, prompt: str) -> AIResult:
         payload = {
@@ -136,13 +129,10 @@ class AIRouter:
             "input": prompt,
         }
         raw = _post_json(
-            "https://api.openai.com/v1/responses",
-            payload,
+            "https://api.openai.com/v1/responses", payload,
             {"Content-Type": "application/json", "Authorization": f"Bearer {self.openai_key}"},
         )
-        text = ""
-        if isinstance(raw.get("output_text"), str):
-            text = raw["output_text"]
+        text = raw.get("output_text") if isinstance(raw.get("output_text"), str) else ""
         if not text:
             chunks: list[str] = []
             for item in raw.get("output", []) or []:
@@ -150,4 +140,12 @@ class AIRouter:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         chunks.append(part["text"])
             text = "\n".join(chunks)
-        return AIResult(_extract_json(text), "openai", self.openai_model)
+        meta = raw.get("usage") or {}
+        details = meta.get("input_tokens_details") or {}
+        usage = {
+            "input_tokens": int(meta.get("input_tokens") or 0),
+            "cached_tokens": int(details.get("cached_tokens") or 0),
+            "output_tokens": int(meta.get("output_tokens") or 0),
+            "total_tokens": int(meta.get("total_tokens") or 0),
+        }
+        return AIResult(_extract_json(text), "openai", self.openai_model, usage)
