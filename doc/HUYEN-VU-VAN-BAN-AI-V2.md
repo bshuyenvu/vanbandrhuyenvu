@@ -93,3 +93,11 @@ V2 là SaaS Foundation + DMS MVP. Nó đã có lớp dữ liệu, auth/RBAC, doc
 ## Dung lượng hồ sơ SSD
 
 Tệp gốc và tệp đính kèm được lưu ngoài Git tại `VBHC_FILE_ROOT`. Hệ thống tính dung lượng từ metadata tệp và chặn tải lên trước khi vượt hạn mức. Mặc định: Miễn phí 100 MB, Cá nhân 1 GB, Chuyên nghiệp 5 GB, Nhóm 20 GB; gói Cơ quan do quản trị viên nền tảng cấu hình. Dashboard hiển thị Đã dùng / Tổng / Còn lại cho không gian đang chọn.
+## V2.3 — Tiếp nhận & số hóa theo lô
+
+- Màn hình `/digitize` nhận tối đa 10 tệp mỗi lượt và xử lý OCR tuần tự.
+- Trình duyệt tính SHA-256, backend đối chiếu tệp đã lưu trước khi gọi AI để tránh tốn token cho bản trùng.
+- Sau OCR, hệ thống kiểm tra thêm số/ký hiệu, ngày ban hành, cơ quan gửi và độ tương đồng trích yếu; hồ sơ nghi trùng bắt buộc cán bộ xác nhận.
+- AI phân loại loại văn bản, mức khẩn và đề xuất đơn vị xử lý; backend ánh xạ đề xuất vào danh mục phòng/khoa và có thể tham chiếu lịch sử xử lý.
+- API `intake/commit` kiểm tra định dạng tệp, quota SSD, trùng lặp, loại văn bản và quyền phân công trước khi tạo hồ sơ + tệp gốc + phân công trong một thao tác nghiệp vụ.
+- Ghi sổ nguyên khối giúp tránh trạng thái văn bản đã tạo nhưng tệp gốc tải lên thất bại.
