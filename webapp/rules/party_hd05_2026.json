@@ -1,0 +1,17 @@
+{
+  "id": "party-399-hd05-2026",
+  "name": "Thể thức văn bản Đảng 2026",
+  "regulation": "399-QĐ/TW",
+  "guidance": "05-HD/VPTW",
+  "guidance_date": "2026-05-27",
+  "font": {"family": "Times New Roman", "encoding": "Unicode TCVN 6909:2001", "color": "black"},
+  "page": {"size": "A4", "orientation": "portrait", "margin_mm": {"top": 20, "bottom": 20, "left": 30, "right": 15}},
+  "body": {"font_pt": [14, 15], "first_line_indent_mm": 10, "space_after_pt_min": 6, "line_spacing_exact_pt": [18, 22], "alignment": "justify"},
+  "cong_van": {"subject_font_pt": 12, "subject_italic": true, "kinh_gui_font_pt": 14, "kinh_gui_italic": true},
+  "signature": {"authority_font_pt": 14, "authority_bold": true, "title_font_pt": 14, "name_font_pt": 14, "name_bold": true},
+  "recipients": {"label": "Nơi nhận:", "label_font_pt": 14, "label_underline": true, "items_font_pt": 12},
+  "sources": [
+    "https://tulieuvankien.dangcongsan.vn/he-thong-van-ban/van-ban-cua-dang/quy-dinh-so-399-qdtw-ngay-09012026-cua-ban-bi-thu-ve-the-loai-tham-quyen-ban-hanh-va-the-thuc-van-ban-cua-dang",
+    "https://tulieuvankien.dangcongsan.vn/he-thong-van-ban/van-ban-cua-dang/huong-dan-so-05-hdvptw-ngay-2752026-cua-van-phong-trung-uong-dang-ve-the-thuc-va-ky-thuat-trinh-bay-van-ban-cua-dang"
+  ]
+}
