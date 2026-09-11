@@ -79,7 +79,7 @@ def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
         candidates = [(model_id, model) for model_id, model in registry.items() if _eligible(model_id, model, target=target, data_policy=data_policy)]
 
     if not candidates:
-        raise ValueError("Không có model khả dụng: kiểm tra gói, chính sách dữ liệu, trạng thái model hoặc daily budget")
+        raise ValueError("Không có mô hình AI khả dụng: hãy kiểm tra gói, chính sách dữ liệu, trạng thái mô hình hoặc ngân sách ngày")
 
     candidates.sort(key=lambda item: _cost_score(item[1]))
     model_id, model = candidates[0]

@@ -1,4 +1,19 @@
-# soan-thao-vbhc — Skill + MCP soạn VBHC theo NĐ 30/2020
+# Huyền Vũ Văn Bản AI
+
+**Production V2.2** — nền tảng quản lý văn bản đến/đi, workflow cơ quan/phòng-khoa, soạn & kiểm định AI, quản lý lượt/token/AI Credit, billing và hồ sơ đính kèm private.
+
+- Web production: `vanban-ai.huyenvu.cloud`
+- Runtime nhẹ: Starlette + SQLite WAL; schema PostgreSQL đã chuẩn bị trong `webapp/saas/schema.sql`.
+- File hồ sơ production lưu ngoài Git trên SSD thông qua `VBHC_FILE_ROOT`; download luôn qua API xác thực.
+- AI hiện hỗ trợ Gemini/OpenAI router, quota theo kỳ, cost ledger, protected facts và policy Public/Internal/Confidential/Restricted.
+- Quản trị: Platform Admin, RBAC cơ quan, phòng/khoa, thành viên, workflow, audit log, model manager và billing.
+- Security V2.2: session revocation, brute-force guard, request-size guard, security headers/CSP/HSTS và private attachment signature validation.
+
+Chi tiết V2 xem `doc/HUYEN-VU-VAN-BAN-AI-V2.md` và `webapp/README.md`. Phần bên dưới là tài liệu **legacy V1/MCP** vẫn được giữ để tương thích công cụ cũ.
+
+---
+
+## Legacy V1 / MCP
 
 Skill tự động hóa việc soạn văn bản hành chính Việt Nam: phân loại loại VB, tổ chức hồ sơ, phỏng vấn lấy quan điểm/dữ liệu, fill template `.docx`, validate thể thức, gợi ý nơi nhận theo phân công nhiệm vụ.
 

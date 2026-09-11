@@ -27,7 +27,7 @@ def _require_admin(request: Request):
 
 async def accounts(request: Request):
     if not _require_admin(request):
-        return _error("Chỉ Platform Admin", 403)
+        return _error("Chỉ quản trị viên nền tảng", 403)
     rows = all_rows("""SELECT u.id,u.email,u.full_name,u.status,u.created_at,
         COALESCE(w.id,'') wallet_id,COALESCE(w.balance_credits,0) balance_credits,
         COALESCE(s.plan_id,'free') plan_id
@@ -40,23 +40,25 @@ async def accounts(request: Request):
 
 async def organizations(request: Request):
     if not _require_admin(request):
-        return _error("Chỉ Platform Admin", 403)
-    rows = all_rows("""SELECT o.id,o.name,o.slug,o.status,o.data_policy,o.created_at,
+        return _error("Chỉ quản trị viên nền tảng", 403)
+    rows = all_rows("""SELECT o.id,o.name,o.slug,o.status,o.data_policy,o.storage_quota_bytes,o.created_at,
         u.email owner_email,COALESCE(w.id,'') wallet_id,COALESCE(w.balance_credits,0) balance_credits,
         COALESCE(s.plan_id,'organization') plan_id,
         (SELECT COUNT(*) FROM memberships m WHERE m.organization_id=o.id AND m.status='active') member_count,
-        (SELECT COUNT(*) FROM documents d WHERE d.organization_id=o.id) document_count
+        (SELECT COUNT(*) FROM documents d WHERE d.organization_id=o.id) document_count,
+        (SELECT COALESCE(SUM(a.size_bytes),0) FROM document_attachments a WHERE a.organization_id=o.id) storage_used_bytes
         FROM organizations o
         LEFT JOIN users u ON u.id=o.owner_user_id
         LEFT JOIN wallets w ON w.scope_type='organization' AND w.scope_id=o.id
         LEFT JOIN subscriptions s ON s.id=(SELECT s2.id FROM subscriptions s2 WHERE s2.scope_type='organization' AND s2.scope_id=o.id AND s2.status='active' ORDER BY s2.created_at DESC LIMIT 1)
+        WHERE COALESCE(o.workspace_type,'organization')='organization'
         ORDER BY o.created_at DESC LIMIT 300""")
     return _json({"ok": True, "organizations": rows})
 
 
 async def wallets(request: Request):
     if not _require_admin(request):
-        return _error("Chỉ Platform Admin", 403)
+        return _error("Chỉ quản trị viên nền tảng", 403)
     rows = all_rows("SELECT * FROM wallets ORDER BY scope_type,scope_id")
     return _json({"ok": True, "wallets": rows})
 

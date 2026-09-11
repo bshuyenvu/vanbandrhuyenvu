@@ -89,3 +89,7 @@ venv/bin/python scripts/bootstrap_hv_admin.py --email YOUR_EMAIL
 ## Trạng thái V2 hiện tại
 
 V2 là SaaS Foundation + DMS MVP. Nó đã có lớp dữ liệu, auth/RBAC, document workflow, billing/credit, Model Manager, Admin UI, AI usage meter và các renderer V2 nêu trên. Chữ ký số, PostgreSQL runtime, cổng thanh toán tự động, local/private LLM và RAG pháp lý toàn diện là các phase kế tiếp.
+
+## Dung lượng hồ sơ SSD
+
+Tệp gốc và tệp đính kèm được lưu ngoài Git tại `VBHC_FILE_ROOT`. Hệ thống tính dung lượng từ metadata tệp và chặn tải lên trước khi vượt hạn mức. Mặc định: Miễn phí 100 MB, Cá nhân 1 GB, Chuyên nghiệp 5 GB, Nhóm 20 GB; gói Cơ quan do quản trị viên nền tảng cấu hình. Dashboard hiển thị Đã dùng / Tổng / Còn lại cho không gian đang chọn.
