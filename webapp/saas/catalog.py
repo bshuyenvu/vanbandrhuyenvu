@@ -37,15 +37,27 @@ PLANS = {
 MODEL_DEFAULTS = {
     "gemini-flash-lite": {
         "provider": "google", "model_name": "gemini-3.5-flash-lite",
-        "display_name": "Gemini Flash-Lite", "tier": "economy",
-        "input_usd_per_million": Decimal("0.30"), "cached_input_usd_per_million": Decimal("0"),
-        "output_usd_per_million": Decimal("2.50"), "service_multiplier": Decimal("1.30")
+        "display_name": "Gemini 3.5 Flash-Lite", "tier": "economy",
+        "input_usd_per_million": Decimal("0.30"), "cached_input_usd_per_million": Decimal("0.03"),
+        "output_usd_per_million": Decimal("2.50"), "service_multiplier": Decimal("1.30"), "enabled": True
+    },
+    "gemini-flash": {
+        "provider": "google", "model_name": "gemini-3.5-flash",
+        "display_name": "Gemini 3.5 Flash", "tier": "standard",
+        "input_usd_per_million": Decimal("1.50"), "cached_input_usd_per_million": Decimal("0.15"),
+        "output_usd_per_million": Decimal("9.00"), "service_multiplier": Decimal("1.30"), "enabled": True
     },
     "gpt-luna": {
         "provider": "openai", "model_name": "gpt-5.6-luna",
-        "display_name": "GPT-5.6 Luna", "tier": "standard",
-        "input_usd_per_million": Decimal("0.20"), "cached_input_usd_per_million": Decimal("0"),
-        "output_usd_per_million": Decimal("1.20"), "service_multiplier": Decimal("1.30")
+        "display_name": "GPT-5.6 Luna", "tier": "economy",
+        "input_usd_per_million": Decimal("0.20"), "cached_input_usd_per_million": Decimal("0.02"),
+        "output_usd_per_million": Decimal("1.20"), "service_multiplier": Decimal("1.30"), "enabled": True
+    },
+    "gpt-terra": {
+        "provider": "openai", "model_name": "gpt-5.6-terra",
+        "display_name": "GPT-5.6 Terra", "tier": "advanced",
+        "input_usd_per_million": Decimal("2.00"), "cached_input_usd_per_million": Decimal("0.20"),
+        "output_usd_per_million": Decimal("12.00"), "service_multiplier": Decimal("1.30"), "enabled": True
     },
 }
 
