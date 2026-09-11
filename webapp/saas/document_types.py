@@ -14,11 +14,11 @@ class DocumentType:
 
 DOCUMENT_TYPES: dict[str, DocumentType] = {
     "gov_cong_van": DocumentType("gov_cong_van", "Công văn", "government", ("incoming","outgoing"), "government_reply", "approval_standard", True),
-    "gov_bao_cao": DocumentType("gov_bao_cao", "Báo cáo", "government", ("outgoing","internal"), "government_report", "approval_standard"),
-    "gov_to_trinh": DocumentType("gov_to_trinh", "Tờ trình", "government", ("outgoing",), "government_submission", "approval_standard"),
-    "gov_ke_hoach": DocumentType("gov_ke_hoach", "Kế hoạch", "government", ("outgoing","internal"), "government_plan", "approval_standard"),
-    "gov_quyet_dinh": DocumentType("gov_quyet_dinh", "Quyết định", "government", ("outgoing",), "government_decision", "approval_strict"),
-    "gov_thong_bao": DocumentType("gov_thong_bao", "Thông báo", "government", ("outgoing","internal"), "government_notice", "approval_standard"),
+    "gov_bao_cao": DocumentType("gov_bao_cao", "Báo cáo", "government", ("outgoing","internal"), "government_named", "approval_standard", True),
+    "gov_to_trinh": DocumentType("gov_to_trinh", "Tờ trình", "government", ("outgoing",), "government_named", "approval_standard", True),
+    "gov_ke_hoach": DocumentType("gov_ke_hoach", "Kế hoạch", "government", ("outgoing","internal"), "government_named", "approval_standard", True),
+    "gov_quyet_dinh": DocumentType("gov_quyet_dinh", "Quyết định", "government", ("outgoing",), "government_named", "approval_strict", True),
+    "gov_thong_bao": DocumentType("gov_thong_bao", "Thông báo", "government", ("outgoing","internal"), "government_named", "approval_standard", True),
     "gov_bien_ban": DocumentType("gov_bien_ban", "Biên bản", "government", ("internal",), "government_minutes", "approval_light"),
     "gov_giay_moi": DocumentType("gov_giay_moi", "Giấy mời", "government", ("outgoing",), "government_invitation", "approval_light"),
     "party_cong_van": DocumentType("party_cong_van", "Công văn Đảng", "party", ("incoming","outgoing"), "party_reply", "party_approval", True),
