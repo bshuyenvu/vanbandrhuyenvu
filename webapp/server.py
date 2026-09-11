@@ -5,10 +5,11 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 HERE = Path(__file__).resolve().parent
@@ -18,9 +19,16 @@ from ai_router import AIError, AIRouter  # noqa: E402
 from document_intake import compact_text, decode_payload, extract_protected_facts  # noqa: E402
 from docx_export import build_government_reply  # noqa: E402
 from party_docx import build_party_reply  # noqa: E402
+from saas.admin_api import routes as admin_routes  # noqa: E402
+from saas.api import current_user, org_role, platform_admin, routes as saas_routes  # noqa: E402
+from saas.catalog import PROJECT_NAME  # noqa: E402
+from saas.export_api import routes as export_routes  # noqa: E402
+from saas.model_manager import choose_model  # noqa: E402
+from saas.store import active_plan, all_rows, charge_ai_usage, ensure_credit, one, wallet_for  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
+STATIC_CONSOLE = HERE / "static" / "console.html"
 
 ANALYZE_SYSTEM = """Bạn là trợ lý văn thư Việt Nam. Nhiệm vụ là phân tích văn bản đến để hỗ trợ cán bộ soạn văn bản trả lời.
 Không được bịa số liệu, tên, chức vụ, số văn bản, thời hạn hoặc căn cứ pháp lý. Nếu không thấy rõ thì để chuỗi rỗng hoặc đưa vào missing_data.
@@ -36,18 +44,160 @@ Không sửa protected facts. Đánh giá mức độ trả lời từng yêu c�
 Kết quả phải là JSON object."""
 
 
+class AccessError(RuntimeError):
+    def __init__(self, message: str, status: int = 403):
+        super().__init__(message)
+        self.status = status
+
+
 def _err(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"ok": False, "error": message}, status_code=status)
 
 
+def _configured_registry() -> dict[str, dict[str, Any]]:
+    rows = all_rows("SELECT * FROM ai_models WHERE enabled=1 ORDER BY id")
+    registry: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        provider = str(row.get("provider") or "").lower()
+        if provider in {"google", "gemini"} and not AI.gemini_key:
+            continue
+        if provider == "openai" and not AI.openai_key:
+            continue
+        registry[row["id"]] = {**row, "enabled": bool(row.get("enabled"))}
+    return registry
+
+
+def _ai_context(request: Request, body: dict[str, Any], task_type: str) -> dict[str, Any]:
+    user = current_user(request)
+    if not user:
+        if os.getenv("VBHC_ALLOW_ANON_AI", "false").lower() in {"1", "true", "yes"}:
+            return {"anonymous": True, "choice": None, "organization_id": None, "department_id": None}
+        raise AccessError("Vui lòng đăng nhập để sử dụng AI", 401)
+
+    org_id = str(body.get("organization_id") or "").strip() or None
+    department_id = str(body.get("department_id") or "").strip() or None
+    if org_id and not platform_admin(user) and not org_role(user["id"], org_id):
+        raise AccessError("Bạn không thuộc cơ quan/đơn vị này", 403)
+
+    data_policy = "internal"
+    if org_id:
+        org = one("SELECT data_policy FROM organizations WHERE id=?", (org_id,))
+        if not org:
+            raise AccessError("Không tìm thấy cơ quan/đơn vị", 404)
+        data_policy = str(org.get("data_policy") or "internal")
+        if data_policy == "confidential" and os.getenv("VBHC_ALLOW_CONFIDENTIAL_EXTERNAL_AI", "false").lower() not in {"1", "true", "yes"}:
+            data_policy = "restricted"
+
+    billing_scope = str(body.get("billing_scope") or ("organization" if org_id else "personal"))
+    if billing_scope == "organization" and org_id:
+        plan_id = active_plan("organization", org_id)
+        wallet = wallet_for(user_id=user["id"], organization_id=org_id)
+    else:
+        plan_id = active_plan("user", user["id"])
+        wallet = wallet_for(user_id=user["id"])
+    ensure_credit(wallet, int(os.getenv("VBHC_MIN_AI_CREDIT", "50")))
+
+    choice = choose_model(
+        task_type=task_type,
+        plan_id=plan_id,
+        data_policy=data_policy,
+        requested_tier=str(body.get("model_tier") or "").strip() or None,
+        registry=_configured_registry(),
+    )
+    return {
+        "anonymous": False,
+        "user": user,
+        "organization_id": org_id,
+        "department_id": department_id,
+        "billing_scope": billing_scope,
+        "plan_id": plan_id,
+        "wallet": wallet,
+        "data_policy": data_policy,
+        "choice": choice,
+    }
+
+
+def _run_ai(*, ctx: dict[str, Any], task_type: str, system: str, prompt: str,
+            file_b64: str | None = None, mime_type: str | None = None):
+    choice = ctx.get("choice")
+    if choice:
+        result = AI.generate_json(
+            system=system,
+            prompt=prompt,
+            file_b64=file_b64,
+            mime_type=mime_type,
+            preferred_provider=choice.provider,
+            preferred_model=choice.model_name,
+        )
+    else:
+        result = AI.generate_json(system=system, prompt=prompt, file_b64=file_b64, mime_type=mime_type)
+
+    billing = None
+    if not ctx.get("anonymous"):
+        user = ctx["user"]
+        billing = charge_ai_usage(
+            user_id=user["id"],
+            organization_id=ctx.get("organization_id"),
+            department_id=ctx.get("department_id"),
+            provider=result.provider,
+            model_name=result.model,
+            task_type=task_type,
+            usage=result.usage,
+        )
+    return result, billing
+
+
 async def home(_: Request) -> Response:
-    if STATIC_INDEX.is_file():
-        return FileResponse(str(STATIC_INDEX), media_type="text/html; charset=utf-8")
-    return _err("Thiếu webapp/static/index.html", 500)
+    if STATIC_CONSOLE.is_file():
+        html = STATIC_CONSOLE.read_text(encoding="utf-8")
+        state_patch = """<script>
+(function(){
+ const el=document.getElementById('orgSelect');
+ if(!el)return;
+ el.addEventListener('change',function(){
+   if(this.value)localStorage.setItem('hv_vbai_active_org',this.value);
+   else localStorage.removeItem('hv_vbai_active_org');
+ });
+ setTimeout(function(){
+   const saved=localStorage.getItem('hv_vbai_active_org');
+   if(saved && el.querySelector('option[value="'+saved+'"]')){
+     el.value=saved; el.dispatchEvent(new Event('change'));
+   }
+ },350);
+})();
+</script>"""
+        return HTMLResponse(html.replace("</body>", state_patch + "</body>"))
+    return _err("Thiếu webapp/static/console.html", 500)
+
+
+async def reply_workbench(_: Request) -> Response:
+    if not STATIC_INDEX.is_file():
+        return _err("Thiếu webapp/static/index.html", 500)
+    html = STATIC_INDEX.read_text(encoding="utf-8")
+    bootstrap = """<script>
+(function(){
+ const token=localStorage.getItem('hv_vbai_token');
+ if(!token){location.replace('/');return;}
+ const nativeFetch=window.fetch.bind(window);
+ window.fetch=function(url,opts){
+   opts=opts||{}; opts.headers=Object.assign({},opts.headers||{},{Authorization:'Bearer '+token});
+   try{
+     if(typeof opts.body==='string' && String(url).startsWith('/api/')){
+       const data=JSON.parse(opts.body); const org=localStorage.getItem('hv_vbai_active_org');
+       if(org && !data.organization_id)data.organization_id=org;
+       if(org && !data.billing_scope)data.billing_scope='organization';
+       opts.body=JSON.stringify(data);
+     }
+   }catch(e){}
+   return nativeFetch(url,opts);
+ };
+})();
+</script>"""
+    return HTMLResponse(html.replace("</head>", bootstrap + "</head>"))
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "vbhc-ai-reply", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.0-wip", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -57,8 +207,14 @@ async def ai_status(_: Request) -> Response:
 async def analyze(request: Request) -> Response:
     try:
         body = await request.json()
+        ctx = _ai_context(request, body, "extract")
+    except AccessError as exc:
+        return _err(str(exc), exc.status)
+    except (ValueError, RuntimeError) as exc:
+        return _err(str(exc), 402)
     except Exception:
         return _err("Body phải là JSON")
+
     text = compact_text(str(body.get("text") or ""))
     file_b64 = str(body.get("file_base64") or "")
     filename = str(body.get("filename") or "document")
@@ -77,42 +233,37 @@ async def analyze(request: Request) -> Response:
     facts = extract_protected_facts(text)
     prompt = f'''Phân tích văn bản đến sau và trả về đúng cấu trúc JSON:
 {{
-  "sender": "",
-  "document_number": "",
-  "document_date": "",
-  "subject": "",
-  "summary": "",
-  "deadline": "",
-  "priority": "normal|urgent|very_urgent",
+  "sender": "", "document_number": "", "document_date": "", "subject": "",
+  "summary": "", "deadline": "", "priority": "normal|urgent|very_urgent",
   "requests": [{{"id":"R1","request":"","required_output":"","status":"unanswered"}}],
   "suggested_reply_type": "Công văn|Báo cáo|Tờ trình|Văn bản khác",
-  "missing_data": [""],
-  "legal_references_seen": [""],
-  "warnings": [""]
+  "missing_data": [""], "legal_references_seen": [""], "warnings": [""]
 }}
 
 VĂN BẢN TRÍCH XUẤT:
 {text[:30000] if text else '[File sẽ được AI đọc trực tiếp]'}
 '''
-    direct_file = None
-    direct_mime = None
-    if payload and mime_type in {"application/pdf", "image/png", "image/jpeg", "image/webp"}:
-        direct_file = file_b64
-        direct_mime = mime_type
+    direct_file = file_b64 if payload and mime_type in {"application/pdf", "image/png", "image/jpeg", "image/webp"} else None
+    direct_mime = mime_type if direct_file else None
     try:
-        result = AI.generate_json(system=ANALYZE_SYSTEM, prompt=prompt, file_b64=direct_file, mime_type=direct_mime)
-    except AIError as exc:
-        return _err(str(exc), 503)
+        result, billing = _run_ai(ctx=ctx,task_type="extract",system=ANALYZE_SYSTEM,prompt=prompt,file_b64=direct_file,mime_type=direct_mime)
+    except (AIError, ValueError) as exc:
+        return _err(str(exc), 503 if isinstance(exc, AIError) else 402)
 
     analysis = result.data
     analysis["protected_facts"] = facts
     analysis["source_filename"] = filename
-    return JSONResponse({"ok": True, "analysis": analysis, "provider": result.provider, "model": result.model})
+    return JSONResponse({"ok": True, "analysis": analysis, "provider": result.provider, "model": result.model, "usage": result.usage, "billing": billing})
 
 
 async def draft_reply(request: Request) -> Response:
     try:
         body = await request.json()
+        ctx = _ai_context(request, body, "draft")
+    except AccessError as exc:
+        return _err(str(exc), exc.status)
+    except (ValueError, RuntimeError) as exc:
+        return _err(str(exc), 402)
     except Exception:
         return _err("Body phải là JSON")
     analysis = body.get("analysis") or {}
@@ -128,31 +279,23 @@ THÔNG TIN CƠ QUAN: {json.dumps(org, ensure_ascii=False)}
 PHÂN TÍCH VĂN BẢN ĐẾN: {json.dumps(analysis, ensure_ascii=False)}
 DỮ LIỆU BỔ SUNG CỦA NGƯỜI DÙNG: {context or '[không có]'}
 PROTECTED FACTS - KHÔNG TỰ Ý THAY ĐỔI: {json.dumps(protected, ensure_ascii=False)}
-
-Trả JSON:
-{{
-  "reply_type":"Công văn",
-  "subject":"",
-  "recipient":"",
-  "opening":"",
-  "paragraphs":[""],
-  "request_responses":[{{"request_id":"R1","status":"answered|partial|missing_data","response":"","needs":[""]}}],
-  "missing_data":[""],
-  "legal_citations_used":[""],
-  "draft_text":"",
-  "warnings":[""]
-}}
+Trả JSON: {{"reply_type":"Công văn","subject":"","recipient":"","opening":"","paragraphs":[""],"request_responses":[{{"request_id":"R1","status":"answered|partial|missing_data","response":"","needs":[""]}}],"missing_data":[""],"legal_citations_used":[""],"draft_text":"","warnings":[""]}}
 '''
     try:
-        result = AI.generate_json(system=DRAFT_SYSTEM, prompt=prompt)
-    except AIError as exc:
-        return _err(str(exc), 503)
-    return JSONResponse({"ok": True, "draft": result.data, "provider": result.provider, "model": result.model})
+        result, billing = _run_ai(ctx=ctx,task_type="draft",system=DRAFT_SYSTEM,prompt=prompt)
+    except (AIError, ValueError) as exc:
+        return _err(str(exc), 503 if isinstance(exc, AIError) else 402)
+    return JSONResponse({"ok": True, "draft": result.data, "provider": result.provider, "model": result.model, "usage": result.usage, "billing": billing})
 
 
 async def review_reply(request: Request) -> Response:
     try:
         body = await request.json()
+        ctx = _ai_context(request, body, "review")
+    except AccessError as exc:
+        return _err(str(exc), exc.status)
+    except (ValueError, RuntimeError) as exc:
+        return _err(str(exc), 402)
     except Exception:
         return _err("Body phải là JSON")
     analysis = body.get("analysis") or {}
@@ -162,33 +305,31 @@ async def review_reply(request: Request) -> Response:
     prompt = f'''Đánh giá dự thảo so với văn bản đến.
 ANALYSIS: {json.dumps(analysis, ensure_ascii=False)}
 DRAFT: {json.dumps(draft, ensure_ascii=False)}
-Trả JSON:
-{{
-  "score": 0,
-  "ready_for_human_review": false,
-  "coverage":[{{"request_id":"R1","status":"answered|partial|missing","note":""}}],
-  "protected_fact_issues":[""],
-  "consistency_issues":[""],
-  "legal_citation_issues":[""],
-  "missing_data":[""],
-  "suggested_edits":[{{"find":"","replace":"","reason":""}}],
-  "warnings":[""]
-}}
+Trả JSON: {{"score":0,"ready_for_human_review":false,"coverage":[{{"request_id":"R1","status":"answered|partial|missing","note":""}}],"protected_fact_issues":[""],"consistency_issues":[""],"legal_citation_issues":[""],"missing_data":[""],"suggested_edits":[{{"find":"","replace":"","reason":""}}],"warnings":[""]}}
 '''
     try:
-        result = AI.generate_json(system=REVIEW_SYSTEM, prompt=prompt)
-    except AIError as exc:
-        return _err(str(exc), 503)
-    return JSONResponse({"ok": True, "review": result.data, "provider": result.provider, "model": result.model})
+        result, billing = _run_ai(ctx=ctx,task_type="review",system=REVIEW_SYSTEM,prompt=prompt)
+    except (AIError, ValueError) as exc:
+        return _err(str(exc), 503 if isinstance(exc, AIError) else 402)
+    return JSONResponse({"ok": True, "review": result.data, "provider": result.provider, "model": result.model, "usage": result.usage, "billing": billing})
 
 
 async def export_docx(request: Request) -> Response:
     try:
         body = await request.json()
+    except Exception:
+        return _err("Body phải là JSON")
+    user = current_user(request)
+    if not user and os.getenv("VBHC_ALLOW_ANON_AI", "false").lower() not in {"1","true","yes"}:
+        return _err("Vui lòng đăng nhập", 401)
+    org_id = str(body.get("organization_id") or "").strip()
+    if user and org_id and not platform_admin(user) and not org_role(user["id"],org_id):
+        return _err("Bạn không thuộc cơ quan/đơn vị này", 403)
+    try:
         standard = str(body.get("standard") or "government").strip().lower()
         document_type = str(body.get("document_type") or body.get("reply_type") or "Công văn").strip().lower()
         if "công văn" not in document_type:
-            return _err("V1 chỉ xuất DOCX đã kiểm định cho thể loại Công văn/phúc đáp. Báo cáo, Tờ trình và loại khác cần builder riêng.", 422)
+            return _err("Endpoint tương thích này chỉ xuất Công văn/phúc đáp. Dùng /api/v2/export/docx cho các thể loại V2.", 422)
         if standard == "government":
             raw = build_government_reply(body)
         elif standard == "party":
@@ -201,12 +342,12 @@ async def export_docx(request: Request) -> Response:
     if not filename.lower().endswith(".docx"):
         filename += ".docx"
     safe_name = filename.encode("ascii", "ignore").decode() or "reply.docx"
-    headers = {"Content-Disposition": f'attachment; filename="{safe_name}"'}
-    return Response(raw, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers=headers)
+    return Response(raw, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
 
 
 routes = [
     Route("/", home, methods=["GET"]),
+    Route("/reply", reply_workbench, methods=["GET"]),
     Route("/healthz", health, methods=["GET"]),
     Route("/api/ai/status", ai_status, methods=["GET"]),
     Route("/api/incoming/analyze", analyze, methods=["POST"]),
@@ -214,11 +355,14 @@ routes = [
     Route("/api/reply/review", review_reply, methods=["POST"]),
     Route("/api/reply/export/docx", export_docx, methods=["POST"]),
 ]
+routes.extend(saas_routes())
+routes.extend(admin_routes())
+routes.extend(export_routes())
 app = Starlette(routes=routes)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="VBHC AI Incoming/Reply web service")
+    parser = argparse.ArgumentParser(description="Huyền Vũ Văn Bản AI V2")
     parser.add_argument("--host", default=os.getenv("VBHC_WEB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("VBHC_WEB_PORT", "8767")))
     args = parser.parse_args()

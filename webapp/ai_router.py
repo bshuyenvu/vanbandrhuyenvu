@@ -57,10 +57,11 @@ class AIResult:
     data: dict[str, Any]
     provider: str
     model: str
+    usage: dict[str, int]
 
 
 class AIRouter:
-    """Gemini-first router, OpenAI fallback. Không phụ thuộc SDK riêng."""
+    """Gemini/OpenAI router. V2 cho phép Model Manager chọn model theo từng tác vụ."""
 
     def __init__(self) -> None:
         self.provider = os.getenv("VBHC_AI_PROVIDER", "auto").strip().lower()
@@ -68,81 +69,91 @@ class AIRouter:
         self.openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.gemini_model = os.getenv("VBHC_GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
         self.openai_model = os.getenv("VBHC_OPENAI_MODEL", "gpt-5.6-luna").strip()
+        self.max_output_tokens = max(256, min(16384, int(os.getenv("VBHC_AI_MAX_OUTPUT_TOKENS", "4096"))))
 
     def status(self) -> dict[str, Any]:
         return {
             "mode": self.provider,
             "gemini": {"configured": bool(self.gemini_key), "model": self.gemini_model},
             "openai": {"configured": bool(self.openai_key), "model": self.openai_model},
+            "max_output_tokens": self.max_output_tokens,
         }
 
-    def generate_json(
-        self,
-        *,
-        system: str,
-        prompt: str,
-        file_b64: str | None = None,
-        mime_type: str | None = None,
-    ) -> AIResult:
-        order: list[str]
+    def generate_json(self, *, system: str, prompt: str, file_b64: str | None = None,
+                      mime_type: str | None = None, preferred_provider: str | None = None,
+                      preferred_model: str | None = None) -> AIResult:
+        preferred = (preferred_provider or "").lower().strip()
+        if preferred in {"google", "gemini"}:
+            if not self.gemini_key:
+                raise AIError("Gemini chưa được cấu hình")
+            return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type,
+                                model=preferred_model or self.gemini_model)
+        if preferred == "openai":
+            if not self.openai_key:
+                raise AIError("OpenAI chưa được cấu hình")
+            return self._openai(system, prompt, model=preferred_model or self.openai_model)
+        if preferred in {"local", "private"}:
+            raise AIError("Provider private/local chưa được gắn runtime trong V2")
+
         if self.provider == "gemini":
             order = ["gemini"]
         elif self.provider == "openai":
             order = ["openai"]
         else:
             order = ["gemini", "openai"]
-
         errors: list[str] = []
         for provider in order:
             try:
                 if provider == "gemini" and self.gemini_key:
-                    return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type)
+                    return self._gemini(system, prompt, file_b64=file_b64, mime_type=mime_type, model=self.gemini_model)
                 if provider == "openai" and self.openai_key:
-                    return self._openai(system, prompt)
+                    return self._openai(system, prompt, model=self.openai_model)
             except AIError as exc:
                 errors.append(f"{provider}: {exc}")
         if errors:
             raise AIError(" | ".join(errors))
         raise AIError("Chưa cấu hình GEMINI_API_KEY hoặc OPENAI_API_KEY")
 
-    def _gemini(self, system: str, prompt: str, *, file_b64: str | None, mime_type: str | None) -> AIResult:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.gemini_model}:generateContent"
-        )
+    def _gemini(self, system: str, prompt: str, *, file_b64: str | None,
+                mime_type: str | None, model: str) -> AIResult:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/" + f"{model}:generateContent"
         parts: list[dict[str, Any]] = [{"text": prompt}]
         if file_b64 and mime_type:
             parts.insert(0, {"inlineData": {"mimeType": mime_type, "data": file_b64}})
         payload = {
             "systemInstruction": {"parts": [{"text": system}]},
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"responseMimeType": "application/json"},
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "maxOutputTokens": self.max_output_tokens,
+            },
         }
-        raw = _post_json(
-            url,
-            payload,
-            {"Content-Type": "application/json", "x-goog-api-key": self.gemini_key},
-        )
+        raw = _post_json(url, payload, {"Content-Type": "application/json", "x-goog-api-key": self.gemini_key})
         try:
             text = raw["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError) as exc:
             raise AIError(f"Gemini response không đúng cấu trúc: {raw}") from exc
-        return AIResult(_extract_json(text), "gemini", self.gemini_model)
+        meta = raw.get("usageMetadata") or {}
+        usage = {
+            "input_tokens": int(meta.get("promptTokenCount") or 0),
+            "cached_tokens": int(meta.get("cachedContentTokenCount") or 0),
+            "output_tokens": int(meta.get("candidatesTokenCount") or 0),
+            "total_tokens": int(meta.get("totalTokenCount") or 0),
+        }
+        return AIResult(_extract_json(text), "google", model, usage)
 
-    def _openai(self, system: str, prompt: str) -> AIResult:
+    def _openai(self, system: str, prompt: str, *, model: str) -> AIResult:
         payload = {
-            "model": self.openai_model,
+            "model": model,
             "instructions": system + "\nChỉ trả về một JSON object hợp lệ, không dùng Markdown.",
             "input": prompt,
+            "max_output_tokens": self.max_output_tokens,
         }
         raw = _post_json(
-            "https://api.openai.com/v1/responses",
-            payload,
+            "https://api.openai.com/v1/responses", payload,
             {"Content-Type": "application/json", "Authorization": f"Bearer {self.openai_key}"},
         )
-        text = ""
-        if isinstance(raw.get("output_text"), str):
-            text = raw["output_text"]
+        text = raw.get("output_text") if isinstance(raw.get("output_text"), str) else ""
         if not text:
             chunks: list[str] = []
             for item in raw.get("output", []) or []:
@@ -150,4 +161,12 @@ class AIRouter:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         chunks.append(part["text"])
             text = "\n".join(chunks)
-        return AIResult(_extract_json(text), "openai", self.openai_model)
+        meta = raw.get("usage") or {}
+        details = meta.get("input_tokens_details") or {}
+        usage = {
+            "input_tokens": int(meta.get("input_tokens") or 0),
+            "cached_tokens": int(details.get("cached_tokens") or 0),
+            "output_tokens": int(meta.get("output_tokens") or 0),
+            "total_tokens": int(meta.get("total_tokens") or 0),
+        }
+        return AIResult(_extract_json(text), "openai", model, usage)
