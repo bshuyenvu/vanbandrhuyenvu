@@ -7,7 +7,7 @@ Module web bổ sung cho repository `vanbandrhuyenvu`:
 3. Rule local trích `protected_facts` (số VB, ngày, tiền, %, căn cứ, deadline).
 4. AI soạn dự thảo theo từng yêu cầu; dữ liệu thiếu phải để `[CẦN BỔ SUNG: ...]`.
 5. AI review độ bao phủ, protected facts, nhất quán và căn cứ.
-6. Xuất DOCX bằng `scripts/vbhc_doc_builder.py`, không tự dựng thể thức Word.
+6. Xuất DOCX bằng engine thể thức tương ứng, không giao cho AI tự dựng bố cục Word.
 
 ## AI router
 
@@ -34,6 +34,6 @@ Mở reverse proxy domain vào `127.0.0.1:8767` để dùng giao diện.
 
 ## Giới hạn an toàn V1
 
-- Xuất DOCX tự động hiện chỉ bật cho khối Nhà nước qua engine Nghị định 30 đang có.
-- Chế độ Đảng dùng được cho phân tích/soạn/review, nhưng backend chặn xuất DOCX cho đến khi rule pack Quy định 399-QĐ/TW + Hướng dẫn 05-HD/VPTW được kiểm định.
+- Xuất DOCX khối Nhà nước tái sử dụng engine Nghị định 30 đang có.
+- Xuất DOCX văn bản Đảng hiện hỗ trợ luồng **công văn/phúc đáp**, áp dụng rule pack `party_hd05_2026.json` theo Quy định 399-QĐ/TW + Hướng dẫn 05-HD/VPTW ngày 27/05/2026. Các thể loại Đảng khác cần thêm template/rule riêng trước khi mở rộng.
 - Khi dùng Gemini/OpenAI, nội dung gửi tới API của nhà cung cấp AI. Với tài liệu mật/nội bộ, cần chính sách dữ liệu và lớp xác thực/reverse proxy phù hợp trước khi mở ra Internet.
