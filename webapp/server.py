@@ -186,6 +186,9 @@ async def export_docx(request: Request) -> Response:
     try:
         body = await request.json()
         standard = str(body.get("standard") or "government").strip().lower()
+        document_type = str(body.get("document_type") or body.get("reply_type") or "Công văn").strip().lower()
+        if "công văn" not in document_type:
+            return _err("V1 chỉ xuất DOCX đã kiểm định cho thể loại Công văn/phúc đáp. Báo cáo, Tờ trình và loại khác cần builder riêng.", 422)
         if standard == "government":
             raw = build_government_reply(body)
         elif standard == "party":
