@@ -28,6 +28,14 @@ class ModelChoice:
     reason: str
 
 
+def _cost_score(model: dict[str, Any]) -> float:
+    """Simple blended cost score; admin prices immediately affect routing."""
+    inp = float(model.get("input_usd_per_million") or 0)
+    out = float(model.get("output_usd_per_million") or 0)
+    mult = float(model.get("service_multiplier") or 1)
+    return (inp + out * 0.35) * mult
+
+
 def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
                  requested_tier: str | None = None, registry: dict[str, dict[str, Any]] | None = None) -> ModelChoice:
     registry = registry or MODEL_DEFAULTS
@@ -40,24 +48,25 @@ def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
     elif target not in allowed:
         target = max((t for t in TIER_ORDER if t in allowed), key=TIER_ORDER.index, default="economy")
 
-    candidates = []
+    candidates: list[tuple[str, dict[str, Any]]] = []
     for model_id, model in registry.items():
-        if not model.get("enabled", True):
+        if not bool(model.get("enabled", True)):
             continue
-        tier = model.get("tier", "economy")
+        tier = str(model.get("tier", "economy"))
         if tier != target:
             continue
-        if data_policy == "restricted" and model.get("provider") not in {"local", "private"}:
+        if data_policy == "restricted" and str(model.get("provider")) not in {"local", "private"}:
             continue
         candidates.append((model_id, model))
 
     if not candidates and target != "economy" and "economy" in allowed and data_policy != "restricted":
-        candidates = [(mid, m) for mid, m in registry.items() if m.get("enabled", True) and m.get("tier") == "economy"]
+        candidates = [(mid, m) for mid, m in registry.items() if bool(m.get("enabled", True)) and m.get("tier") == "economy"]
         target = "economy"
 
     if not candidates:
         raise ValueError("Không có model phù hợp với gói sử dụng và chính sách dữ liệu")
 
+    candidates.sort(key=lambda item: _cost_score(item[1]))
     model_id, model = candidates[0]
     return ModelChoice(
         model_id=model_id,
@@ -65,21 +74,23 @@ def choose_model(*, task_type: str, plan_id: str, data_policy: str = "internal",
         model_name=str(model.get("model_name")),
         display_name=str(model.get("display_name")),
         tier=target,
-        reason=f"task={task_type}; plan={plan_id}; policy={data_policy}",
+        reason=f"task={task_type}; plan={plan_id}; policy={data_policy}; strategy=lowest_cost_in_tier",
     )
 
 
-def public_model_catalog(plan_id: str) -> list[dict[str, Any]]:
+def public_model_catalog(plan_id: str, registry: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     plan = PLANS.get(plan_id, PLANS["free"])
     allowed = set(plan.get("tiers", []))
+    registry = registry or MODEL_DEFAULTS
     result = []
-    for model_id, model in MODEL_DEFAULTS.items():
-        if model.get("tier") not in allowed:
+    for model_id, model in registry.items():
+        if model.get("tier") not in allowed or not bool(model.get("enabled", True)):
             continue
         result.append({
             "id": model_id,
             "display_name": model.get("display_name"),
             "provider": model.get("provider"),
             "tier": model.get("tier"),
+            "cost_score": _cost_score(model),
         })
-    return result
+    return sorted(result, key=lambda item: (TIER_ORDER.index(item["tier"]), item["cost_score"]))
