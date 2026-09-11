@@ -17,6 +17,7 @@ sys.path.insert(0, str(HERE))
 from ai_router import AIError, AIRouter  # noqa: E402
 from document_intake import compact_text, decode_payload, extract_protected_facts  # noqa: E402
 from docx_export import build_government_reply  # noqa: E402
+from party_docx import build_party_reply  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
@@ -185,12 +186,12 @@ async def export_docx(request: Request) -> Response:
     try:
         body = await request.json()
         standard = str(body.get("standard") or "government").strip().lower()
-        if standard != "government":
-            return _err(
-                "Xuất DOCX thể thức Đảng chưa được bật cho đến khi rule pack Quy định 399-QĐ/TW + Hướng dẫn 05-HD/VPTW được kiểm định; không xuất nhầm theo Nghị định 30.",
-                422,
-            )
-        raw = build_government_reply(body)
+        if standard == "government":
+            raw = build_government_reply(body)
+        elif standard == "party":
+            raw = build_party_reply(body)
+        else:
+            return _err(f"Chuẩn văn bản không hỗ trợ: {standard}", 422)
     except Exception as exc:
         return _err(f"Không tạo được DOCX: {exc}", 500)
     filename = str(body.get("download_name") or "du-thao-phuc-dap.docx")
