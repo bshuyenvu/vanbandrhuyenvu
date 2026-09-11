@@ -19,6 +19,7 @@ from ai_router import AIError, AIRouter  # noqa: E402
 from document_intake import compact_text, decode_payload, extract_protected_facts  # noqa: E402
 from docx_export import build_government_reply  # noqa: E402
 from party_docx import build_party_reply  # noqa: E402
+from security_middleware import ProductionSecurityMiddleware  # noqa: E402
 from saas.admin_api import routes as admin_routes  # noqa: E402
 from saas.api import current_user, org_role, platform_admin, routes as saas_routes  # noqa: E402
 from saas.catalog import PROJECT_NAME  # noqa: E402
@@ -211,7 +212,7 @@ async def reply_workbench(_: Request) -> Response:
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.1-usage", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.2-production", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -245,14 +246,22 @@ async def analyze(request: Request) -> Response:
         return _err("Cần nhập nội dung hoặc chọn file")
 
     facts = extract_protected_facts(text)
-    prompt = f'''Phân tích văn bản đến sau và trả về đúng cấu trúc JSON:
+    prompt = f'''Phân tích/OCR văn bản đến sau và trả về đúng cấu trúc JSON. Không đoán khi không đọc được; trường không chắc chắn để chuỗi rỗng và ghi cảnh báo.
 {{
+  "standard": "government|party",
+  "document_type_id": "gov_cong_van|gov_bao_cao|gov_to_trinh|gov_ke_hoach|gov_quyet_dinh|gov_thong_bao|gov_bien_ban|gov_giay_moi|party_cong_van|party_bao_cao|party_to_trinh|party_ke_hoach|party_quyet_dinh|party_thong_bao|party_nghi_quyet|party_ket_luan",
+  "document_type_name": "",
   "sender": "", "document_number": "", "document_date": "", "subject": "",
-  "summary": "", "deadline": "", "priority": "normal|urgent|very_urgent",
+  "signer_name": "", "signer_title": "",
+  "summary": "", "task_summary": "", "deadline": "",
+  "priority": "normal|urgent|very_urgent", "urgency_label": "Bình thường|Khẩn|Hỏa tốc",
+  "suggested_department": "",
   "requests": [{{"id":"R1","request":"","required_output":"","status":"unanswered"}}],
   "suggested_reply_type": "Công văn|Báo cáo|Tờ trình|Văn bản khác",
   "missing_data": [""], "legal_references_seen": [""], "warnings": [""]
 }}
+
+Quy tắc: ưu tiên đọc trực tiếp hình/PDF nếu có; giữ nguyên số/ký hiệu, tên cơ quan, người ký, ngày và thời hạn như nguồn. task_summary phải tóm tắt các việc cần xử lý, không tự thêm nhiệm vụ.
 
 VĂN BẢN TRÍCH XUẤT:
 {text[:30000] if text else '[File sẽ được AI đọc trực tiếp]'}
@@ -374,6 +383,7 @@ routes.extend(admin_routes())
 routes.extend(export_routes())
 routes.extend(usage_routes())
 app = Starlette(routes=routes)
+app.add_middleware(ProductionSecurityMiddleware)
 
 
 def main() -> None:

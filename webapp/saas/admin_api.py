@@ -10,7 +10,7 @@ from starlette.routing import Route
 from .api import current_user, platform_admin, require_org_permission
 from .catalog import PLANS
 from .rbac import ROLE_PERMISSIONS
-from .store import adjust_wallet, all_rows, audit, one, execute, set_subscription
+from .store import adjust_wallet, all_rows, audit, create_personal_wallet, one, execute, set_subscription
 
 
 def _json(data: dict[str, Any], status: int = 200) -> JSONResponse:
@@ -45,7 +45,11 @@ async def set_user_status(request: Request):
     before = one("SELECT id,email,status FROM users WHERE id=?", (user_id,))
     if not before:
         return _error("Không tìm thấy tài khoản", 404)
+    if user_id == admin["id"] and status != "active":
+        return _error("Không thể tự khóa hoặc vô hiệu hóa tài khoản Platform Admin đang sử dụng", 409)
     execute("UPDATE users SET status=? WHERE id=?", (status,user_id))
+    if status == "active":
+        create_personal_wallet(user_id, "free")
     audit(organization_id=None,user_id=admin["id"],action="user.status",entity_type="user",entity_id=user_id,before=before,after={"status":status})
     return _json({"ok": True, "user_id": user_id, "status": status})
 
@@ -56,7 +60,7 @@ async def org_members(request: Request):
     if not user or not require_org_permission(user,org_id,"member.manage")[0]:
         return _error("Không có quyền quản lý thành viên", 403)
     rows = all_rows("""SELECT m.id membership_id,m.user_id,u.email,u.full_name,u.status user_status,m.department_id,d.name department_name,m.role,m.status membership_status,m.created_at FROM memberships m JOIN users u ON u.id=m.user_id LEFT JOIN departments d ON d.id=m.department_id WHERE m.organization_id=? ORDER BY u.full_name,u.email""", (org_id,))
-    return _json({"ok": True, "members": rows, "roles": sorted(ROLE_PERMISSIONS)})
+    return _json({"ok": True, "members": rows, "roles": sorted(r for r in ROLE_PERMISSIONS if r != "platform_super_admin")})
 
 
 async def update_membership(request: Request):
@@ -72,10 +76,16 @@ async def update_membership(request: Request):
     role = body.get("role", before["role"])
     status = body.get("status", before["status"])
     department_id = body.get("department_id", before["department_id"])
-    if role not in ROLE_PERMISSIONS:
+    if role not in ROLE_PERMISSIONS or role == "platform_super_admin":
         return _error("Vai trò không hợp lệ")
     if status not in {"active","suspended","archived"}:
         return _error("Trạng thái thành viên không hợp lệ")
+    if department_id and not one("SELECT id FROM departments WHERE id=? AND organization_id=? AND status='active'", (department_id,org_id)):
+        return _error("Phòng/khoa không thuộc cơ quan hoặc đã ngưng hoạt động")
+    if before.get("role") == "organization_owner" and role != "organization_owner":
+        owners = one("SELECT COUNT(*) n FROM memberships WHERE organization_id=? AND role='organization_owner' AND status='active'", (org_id,)) or {"n":0}
+        if int(owners.get("n") or 0) <= 1:
+            return _error("Cơ quan phải còn ít nhất một Organization Owner", 409)
     execute("UPDATE memberships SET role=?,status=?,department_id=? WHERE id=? AND organization_id=?", (role,status,department_id,membership_id,org_id))
     audit(organization_id=org_id,user_id=user["id"],action="membership.update",entity_type="membership",entity_id=membership_id,before=before,after={"role":role,"status":status,"department_id":department_id})
     return _json({"ok": True, "membership_id": membership_id})
@@ -132,15 +142,15 @@ async def platform_usage(request: Request):
     user = current_user(request)
     if not user or not platform_admin(user):
         return _error("Chỉ Platform Admin được xem usage toàn hệ thống", 403)
-    summary = one("""SELECT COUNT(*) requests,COALESCE(SUM(input_tokens),0) input_tokens,COALESCE(SUM(output_tokens),0) output_tokens,COALESCE(SUM(provider_cost_usd),0) provider_cost_usd,COALESCE(SUM(charged_credits),0) charged_credits FROM ai_usage""") or {}
-    by_model = all_rows("""SELECT model_id,COUNT(*) requests,SUM(input_tokens) input_tokens,SUM(output_tokens) output_tokens,SUM(provider_cost_usd) provider_cost_usd,SUM(charged_credits) charged_credits FROM ai_usage GROUP BY model_id ORDER BY provider_cost_usd DESC""")
+    summary = one("""SELECT COUNT(*) requests,COALESCE(SUM(input_tokens),0) input_tokens,COALESCE(SUM(cached_tokens),0) cached_tokens,COALESCE(SUM(output_tokens),0) output_tokens,COALESCE(SUM(input_tokens+output_tokens),0) total_tokens,COALESCE(SUM(provider_cost_usd),0) provider_cost_usd,COALESCE(SUM(charged_credits),0) charged_credits FROM ai_usage""") or {}
+    by_model = all_rows("""SELECT model_id,COUNT(*) requests,SUM(input_tokens) input_tokens,SUM(cached_tokens) cached_tokens,SUM(output_tokens) output_tokens,SUM(input_tokens+output_tokens) total_tokens,SUM(provider_cost_usd) provider_cost_usd,SUM(charged_credits) charged_credits FROM ai_usage GROUP BY model_id ORDER BY provider_cost_usd DESC""")
     return _json({"ok": True, "summary": summary, "by_model": by_model})
 
 
 async def org_usage(request: Request):
     user = current_user(request)
     org_id = request.path_params["org_id"]
-    if not user or not require_org_permission(user,org_id,"usage.view")[0] and not require_org_permission(user,org_id,"billing.manage")[0]:
+    if not user or (not require_org_permission(user,org_id,"usage.view")[0] and not require_org_permission(user,org_id,"billing.manage")[0]):
         return _error("Không có quyền xem usage", 403)
     summary = one("""SELECT COUNT(*) requests,COALESCE(SUM(input_tokens),0) input_tokens,COALESCE(SUM(output_tokens),0) output_tokens,COALESCE(SUM(provider_cost_usd),0) provider_cost_usd,COALESCE(SUM(charged_credits),0) charged_credits FROM ai_usage WHERE organization_id=?""", (org_id,)) or {}
     return _json({"ok": True, "summary": summary})

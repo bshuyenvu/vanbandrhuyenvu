@@ -116,7 +116,6 @@ async def confirm_order(request: Request):
             db.rollback()
             return _error(f"Không thể xác nhận đơn ở trạng thái {order['status']}", 409)
 
-        # Lock order before changing subscription/wallet. A second confirmation cannot pass this update.
         changed = db.execute("UPDATE payment_orders SET status='processing' WHERE id=? AND status IN ('pending','review')", (order_id,)).rowcount
         if changed != 1:
             db.rollback()
@@ -124,7 +123,7 @@ async def confirm_order(request: Request):
 
         db.execute("UPDATE subscriptions SET status='replaced' WHERE scope_type=? AND scope_id=? AND status='active'", (order["scope_type"],order["scope_id"]))
         subscription_id = new_id("sub_")
-        db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status) VALUES(?,?,?,?,?)", (subscription_id,order["scope_type"],order["scope_id"],order["plan_id"],"active"))
+        db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status,starts_at,ends_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,datetime('now','+30 days'))", (subscription_id,order["scope_type"],order["scope_id"],order["plan_id"],"active"))
 
         wallet = db.execute("SELECT * FROM wallets WHERE scope_type=? AND scope_id=?", (order["scope_type"],order["scope_id"])).fetchone()
         if wallet:

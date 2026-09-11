@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
+import json
+import os
+import re
+import zipfile
+from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
 from .api import current_user, require_org_permission
@@ -33,6 +41,60 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return _json({"ok": False, "error": message}, status)
 
 
+ALLOWED_ATTACHMENT_EXTENSIONS = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"}
+ATTACHMENT_MIME = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+}
+
+
+def _attachment_root() -> Path:
+    default = Path(__file__).resolve().parents[2] / "data" / "files"
+    root = Path(os.getenv("VBHC_FILE_ROOT", str(default))).expanduser().resolve()
+    required_mount_raw = os.getenv("VBHC_REQUIRED_STORAGE_MOUNT", "").strip()
+    if required_mount_raw:
+        required_mount = Path(required_mount_raw).expanduser().resolve()
+        if not required_mount.is_mount():
+            raise RuntimeError(f"Kho lưu trữ bắt buộc chưa được mount: {required_mount}")
+        if root != required_mount and required_mount not in root.parents:
+            raise RuntimeError("VBHC_FILE_ROOT nằm ngoài storage mount bắt buộc")
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return root
+
+
+def _safe_original_name(value: str) -> str:
+    name = Path(value or "document").name.strip()[:180]
+    name = re.sub(r"[\x00-\x1f\x7f]", "_", name)
+    return name or "document"
+
+
+def _valid_attachment_content(ext: str, raw: bytes) -> bool:
+    if ext == ".pdf":
+        return raw.startswith(b"%PDF-")
+    if ext == ".png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in {".jpg", ".jpeg"}:
+        return raw.startswith(b"\xff\xd8\xff")
+    if ext == ".webp":
+        return len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    if ext == ".txt":
+        try:
+            raw.decode("utf-8")
+            return True
+        except UnicodeDecodeError:
+            return False
+    if ext == ".docx":
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                names = set(zf.namelist())
+                return "[Content_Types].xml" in names and "word/document.xml" in names
+        except Exception:
+            return False
+    return False
+
+
 def init_workflow_schema() -> None:
     with connect() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS document_assignments(
@@ -53,9 +115,123 @@ async def document_detail(request: Request):
     doc = one("SELECT * FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id))
     if not doc:
         return _error("Không tìm thấy văn bản", 404)
-    assignments = all_rows("SELECT * FROM document_assignments WHERE document_id=? ORDER BY created_at DESC", (doc_id,))
-    versions = all_rows("SELECT * FROM document_versions WHERE document_id=? ORDER BY version DESC", (doc_id,))
-    return _json({"ok": True, "document": doc, "assignments": assignments, "versions": versions})
+    try:
+        doc["metadata"] = json.loads(doc.get("metadata") or "{}")
+    except Exception:
+        doc["metadata"] = {}
+    assignments = all_rows("""SELECT a.*,d.name department_name,u.full_name assignee_name,u.email assignee_email,
+        au.full_name assigned_by_name FROM document_assignments a
+        LEFT JOIN departments d ON d.id=a.department_id
+        LEFT JOIN users u ON u.id=a.assignee_user_id
+        LEFT JOIN users au ON au.id=a.assigned_by
+        WHERE a.document_id=? ORDER BY a.created_at DESC""", (doc_id,))
+    versions = all_rows("""SELECT v.*,u.full_name created_by_name FROM document_versions v
+        LEFT JOIN users u ON u.id=v.created_by WHERE v.document_id=? ORDER BY v.version DESC""", (doc_id,))
+    attachments = all_rows("""SELECT a.id,a.original_name,a.mime_type,a.size_bytes,a.sha256,a.created_at,a.uploaded_by,
+        u.full_name uploaded_by_name FROM document_attachments a LEFT JOIN users u ON u.id=a.uploaded_by
+        WHERE a.document_id=? AND a.organization_id=? ORDER BY a.created_at DESC""", (doc_id,org_id))
+    events = all_rows("SELECT id,action,user_id,before_data,after_data,created_at FROM audit_logs WHERE organization_id=? AND entity_type='document' AND entity_id=? ORDER BY id DESC LIMIT 100", (org_id,doc_id))
+    return _json({"ok": True, "document": doc, "assignments": assignments, "versions": versions, "attachments": attachments, "events": events, "transitions": sorted(VALID_TRANSITIONS.get(str(doc.get("status") or "draft"), set()))})
+
+
+async def update_document(request: Request):
+    user = current_user(request)
+    org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
+    if not user or not require_org_permission(user, org_id, "document.create")[0]:
+        return _error("Không có quyền cập nhật văn bản", 403)
+    current = one("SELECT * FROM documents WHERE id=? AND organization_id=?", (doc_id, org_id))
+    if not current:
+        return _error("Không tìm thấy văn bản", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Body phải là JSON")
+    allowed = {"department_id","register_number","source_number","symbol","sender","recipient","subject","priority","confidentiality","deadline","metadata"}
+    values = {k: body[k] for k in allowed if k in body}
+    if "subject" in values and not str(values["subject"] or "").strip():
+        return _error("Trích yếu không được để trống")
+    if "priority" in values and values["priority"] not in {"normal","urgent","very_urgent"}:
+        return _error("Mức độ ưu tiên không hợp lệ")
+    if "confidentiality" in values and values["confidentiality"] not in {"public","internal","confidential","restricted"}:
+        return _error("Mức độ dữ liệu không hợp lệ")
+    if values.get("department_id"):
+        if not one("SELECT id FROM departments WHERE id=? AND organization_id=? AND status='active'", (values["department_id"],org_id)):
+            return _error("Phòng/khoa không hợp lệ")
+    if "metadata" in values:
+        if not isinstance(values["metadata"], dict):
+            return _error("metadata phải là object")
+        values["metadata"] = json.dumps(values["metadata"], ensure_ascii=False)
+    if not values:
+        return _error("Không có trường hợp lệ để cập nhật")
+    sets = ",".join(f"{k}=?" for k in values) + ",updated_at=CURRENT_TIMESTAMP"
+    execute(f"UPDATE documents SET {sets} WHERE id=? AND organization_id=?", tuple(values.values()) + (doc_id,org_id))
+    after = one("SELECT * FROM documents WHERE id=? AND organization_id=?", (doc_id,org_id))
+    audit(organization_id=org_id,user_id=user["id"],action="document.update",entity_type="document",entity_id=doc_id,before=current,after=after)
+    return _json({"ok": True, "document": after})
+
+
+async def upload_attachment(request: Request):
+    user = current_user(request)
+    org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
+    if not user or not require_org_permission(user, org_id, "document.version")[0]:
+        return _error("Không có quyền đính kèm file", 403)
+    if not one("SELECT id FROM documents WHERE id=? AND organization_id=?", (doc_id,org_id)):
+        return _error("Không tìm thấy văn bản", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("Body phải là JSON")
+    original = _safe_original_name(str(body.get("filename") or "document"))
+    ext = Path(original).suffix.lower()
+    if ext not in ALLOWED_ATTACHMENT_EXTENSIONS:
+        return _error("Chỉ cho phép PDF, DOCX, TXT, PNG, JPG/JPEG hoặc WEBP")
+    encoded = str(body.get("file_base64") or "")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return _error("file_base64 không hợp lệ")
+    max_bytes = max(1024 * 1024, int(os.getenv("VBHC_ATTACHMENT_MAX_BYTES", str(12 * 1024 * 1024))))
+    if not raw:
+        return _error("File rỗng")
+    if len(raw) > max_bytes:
+        return _error(f"File vượt quá {max_bytes // (1024 * 1024)} MB", 413)
+    if not _valid_attachment_content(ext, raw):
+        return _error("Nội dung file không khớp định dạng hoặc file bị hỏng", 422)
+    attachment_id = new_id("att_")
+    root = _attachment_root()
+    target_dir = (root / org_id / doc_id).resolve()
+    if root not in target_dir.parents:
+        return _error("Đường dẫn lưu file không hợp lệ", 500)
+    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stored_name = attachment_id + ext
+    target = target_dir / stored_name
+    target.write_bytes(raw)
+    target.chmod(0o600)
+    digest = hashlib.sha256(raw).hexdigest()
+    mime = ATTACHMENT_MIME[ext]
+    try:
+        execute("INSERT INTO document_attachments(id,document_id,organization_id,original_name,stored_name,mime_type,size_bytes,sha256,uploaded_by) VALUES(?,?,?,?,?,?,?,?,?)",
+                (attachment_id,doc_id,org_id,original,stored_name,mime,len(raw),digest,user["id"]))
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    audit(organization_id=org_id,user_id=user["id"],action="document.attachment.upload",entity_type="document",entity_id=doc_id,after={"attachment_id":attachment_id,"filename":original,"size_bytes":len(raw),"sha256":digest})
+    return _json({"ok": True, "attachment": {"id":attachment_id,"filename":original,"mime_type":mime,"size_bytes":len(raw),"sha256":digest}}, 201)
+
+
+async def download_attachment(request: Request):
+    user = current_user(request)
+    org_id, doc_id, attachment_id = request.path_params["org_id"], request.path_params["doc_id"], request.path_params["attachment_id"]
+    if not user or not require_org_permission(user, org_id, "document.read")[0]:
+        return _error("Không có quyền tải file", 403)
+    item = one("SELECT * FROM document_attachments WHERE id=? AND document_id=? AND organization_id=?", (attachment_id,doc_id,org_id))
+    if not item:
+        return _error("Không tìm thấy file", 404)
+    root = _attachment_root()
+    target = (root / org_id / doc_id / item["stored_name"]).resolve()
+    if root not in target.parents or not target.is_file():
+        return _error("File lưu trữ không còn tồn tại", 404)
+    return FileResponse(target, media_type=item["mime_type"], filename=item["original_name"], headers={"Cache-Control":"private, no-store"})
 
 
 async def assign_document(request: Request):
@@ -132,6 +308,9 @@ def routes() -> list[Route]:
     init_workflow_schema()
     return [
         Route("/api/v2/organizations/{org_id}/documents/{doc_id}", document_detail, methods=["GET"]),
+        Route("/api/v2/organizations/{org_id}/documents/{doc_id}", update_document, methods=["PATCH"]),
+        Route("/api/v2/organizations/{org_id}/documents/{doc_id}/attachments", upload_attachment, methods=["POST"]),
+        Route("/api/v2/organizations/{org_id}/documents/{doc_id}/attachments/{attachment_id}", download_attachment, methods=["GET"]),
         Route("/api/v2/organizations/{org_id}/documents/{doc_id}/assign", assign_document, methods=["POST"]),
         Route("/api/v2/organizations/{org_id}/documents/{doc_id}/status", transition_document, methods=["PATCH"]),
         Route("/api/v2/organizations/{org_id}/documents/{doc_id}/versions", add_version, methods=["POST"]),

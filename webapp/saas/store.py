@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -14,31 +15,66 @@ DB_PATH = Path(os.getenv("VBHC_DEV_DB", Path(__file__).resolve().parents[2] / "d
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,full_name TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,full_name TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',session_version INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL,slug TEXT UNIQUE NOT NULL,owner_user_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',data_policy TEXT NOT NULL DEFAULT 'internal',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS departments(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,parent_id TEXT,name TEXT NOT NULL,code TEXT,type TEXT NOT NULL DEFAULT 'department',status TEXT NOT NULL DEFAULT 'active');
 CREATE TABLE IF NOT EXISTS memberships(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,user_id TEXT NOT NULL,department_id TEXT,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS wallets(id TEXT PRIMARY KEY,scope_type TEXT NOT NULL,scope_id TEXT NOT NULL,balance_credits INTEGER NOT NULL DEFAULT 0,monthly_budget_credits INTEGER,hard_limit_credits INTEGER,UNIQUE(scope_type,scope_id));
 CREATE TABLE IF NOT EXISTS credit_ledger(id TEXT PRIMARY KEY,wallet_id TEXT NOT NULL,delta_credits INTEGER NOT NULL,balance_after INTEGER NOT NULL,event_type TEXT NOT NULL,reference_type TEXT,reference_id TEXT,note TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,scope_type TEXT NOT NULL,scope_id TEXT NOT NULL,plan_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,department_id TEXT,direction TEXT NOT NULL,document_type TEXT NOT NULL,standard TEXT NOT NULL,register_number TEXT,source_number TEXT,symbol TEXT,sender TEXT,recipient TEXT,subject TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'draft',priority TEXT NOT NULL DEFAULT 'normal',confidentiality TEXT NOT NULL DEFAULT 'internal',deadline TEXT,parent_document_id TEXT,owner_user_id TEXT,metadata TEXT NOT NULL DEFAULT '{}',created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,scope_type TEXT NOT NULL,scope_id TEXT NOT NULL,plan_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',created_at TEXT DEFAULT CURRENT_TIMESTAMP,starts_at TEXT DEFAULT CURRENT_TIMESTAMP,ends_at TEXT);
+CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,department_id TEXT,direction TEXT NOT NULL,document_type TEXT NOT NULL,standard TEXT NOT NULL,register_number TEXT,source_number TEXT,symbol TEXT,sender TEXT,recipient TEXT,subject TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'draft',priority TEXT NOT NULL DEFAULT 'normal',confidentiality TEXT NOT NULL DEFAULT 'internal',deadline TEXT,parent_document_id TEXT,owner_user_id TEXT,intake_number INTEGER,register_year INTEGER,received_at TEXT,metadata TEXT NOT NULL DEFAULT '{}',created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS document_versions(id TEXT PRIMARY KEY,document_id TEXT NOT NULL,version INTEGER NOT NULL,content_text TEXT NOT NULL DEFAULT '',created_by TEXT,ai_model_id TEXT,change_note TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(document_id,version));
+CREATE TABLE IF NOT EXISTS document_attachments(id TEXT PRIMARY KEY,document_id TEXT NOT NULL,organization_id TEXT NOT NULL,original_name TEXT NOT NULL,stored_name TEXT NOT NULL,mime_type TEXT NOT NULL,size_bytes INTEGER NOT NULL,sha256 TEXT NOT NULL,uploaded_by TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_doc_attachments_doc ON document_attachments(document_id,created_at);
 CREATE TABLE IF NOT EXISTS ai_models(id TEXT PRIMARY KEY,provider TEXT NOT NULL,model_name TEXT NOT NULL,display_name TEXT NOT NULL,tier TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,input_usd_per_million REAL NOT NULL DEFAULT 0,cached_input_usd_per_million REAL NOT NULL DEFAULT 0,output_usd_per_million REAL NOT NULL DEFAULT 0,service_multiplier REAL NOT NULL DEFAULT 1.3,daily_budget_usd REAL,config TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS ai_usage(id TEXT PRIMARY KEY,user_id TEXT,organization_id TEXT,department_id TEXT,wallet_id TEXT,model_id TEXT,task_type TEXT NOT NULL,input_tokens INTEGER NOT NULL DEFAULT 0,cached_tokens INTEGER NOT NULL DEFAULT 0,output_tokens INTEGER NOT NULL DEFAULT 0,provider_cost_usd REAL NOT NULL DEFAULT 0,charged_credits INTEGER NOT NULL DEFAULT 0,request_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,organization_id TEXT,user_id TEXT,action TEXT NOT NULL,entity_type TEXT NOT NULL,entity_id TEXT,before_data TEXT,after_data TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS auth_attempts(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT,ip TEXT NOT NULL,success INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 """
 
 
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
 def init_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
+        user_cols = {r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}
+        if "session_version" not in user_cols:
+            db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0")
+        doc_cols = {r[1] for r in db.execute("PRAGMA table_info(documents)").fetchall()}
+        for col, ddl in (("intake_number", "INTEGER"), ("register_year", "INTEGER"), ("received_at", "TEXT")):
+            if col not in doc_cols:
+                db.execute(f"ALTER TABLE documents ADD COLUMN {col} {ddl}")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_docs_intake_unique ON documents(organization_id,register_year,intake_number) WHERE direction='incoming' AND intake_number IS NOT NULL")
+        sub_cols = {r[1] for r in db.execute("PRAGMA table_info(subscriptions)").fetchall()}
+        if "starts_at" not in sub_cols:
+            db.execute("ALTER TABLE subscriptions ADD COLUMN starts_at TEXT")
+            db.execute("UPDATE subscriptions SET starts_at=created_at WHERE starts_at IS NULL")
+        if "ends_at" not in sub_cols:
+            db.execute("ALTER TABLE subscriptions ADD COLUMN ends_at TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_email_time ON auth_attempts(email,created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_ip_time ON auth_attempts(ip,created_at)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_reference_unique ON credit_ledger(wallet_id,reference_type,reference_id) WHERE reference_type IS NOT NULL AND reference_id IS NOT NULL")
+        db.execute("UPDATE subscriptions SET status='expired' WHERE status='active' AND ends_at IS NOT NULL AND ends_at<=CURRENT_TIMESTAMP")
+        db.execute("""UPDATE subscriptions SET status='replaced'
+                      WHERE status='active' AND id NOT IN (
+                        SELECT id FROM (
+                          SELECT s1.id FROM subscriptions s1
+                          WHERE s1.status='active'
+                            AND s1.rowid=(SELECT s2.rowid FROM subscriptions s2
+                                         WHERE s2.scope_type=s1.scope_type AND s2.scope_id=s1.scope_id AND s2.status='active'
+                                         ORDER BY COALESCE(s2.starts_at,s2.created_at) DESC,s2.rowid DESC LIMIT 1)
+                        )
+                      )""")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_active_subscription_scope ON subscriptions(scope_type,scope_id) WHERE status='active'")
+        db.execute("DELETE FROM auth_attempts WHERE created_at < datetime('now','-2 days')")
         for model_id, m in MODEL_DEFAULTS.items():
             db.execute("""INSERT OR IGNORE INTO ai_models(id,provider,model_name,display_name,tier,input_usd_per_million,cached_input_usd_per_million,output_usd_per_million,service_multiplier,config) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                        (model_id,m["provider"],m["model_name"],m["display_name"],m["tier"],float(m["input_usd_per_million"]),float(m["cached_input_usd_per_million"]),float(m["output_usd_per_million"]),float(m["service_multiplier"]),"{}"))
@@ -67,9 +103,13 @@ def create_personal_wallet(user_id: str, plan_id: str = "free") -> dict[str, Any
     wallet_id = new_id("wal_")
     balance = int(plan["included_credits"])
     with connect() as db:
-        db.execute("INSERT OR IGNORE INTO subscriptions(id,scope_type,scope_id,plan_id,status) VALUES(?,?,?,?,?)", (new_id("sub_"),"user",user_id,plan_id,"active"))
+        db.execute("BEGIN IMMEDIATE")
         existing = db.execute("SELECT * FROM wallets WHERE scope_type='user' AND scope_id=?", (user_id,)).fetchone()
+        active_sub = db.execute("SELECT id FROM subscriptions WHERE scope_type='user' AND scope_id=? AND status='active' AND (ends_at IS NULL OR ends_at>CURRENT_TIMESTAMP) ORDER BY COALESCE(starts_at,created_at) DESC LIMIT 1", (user_id,)).fetchone()
+        if not active_sub:
+            db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status) VALUES(?,?,?,?,?)", (new_id("sub_"),"user",user_id,plan_id,"active"))
         if existing:
+            db.commit()
             return dict(existing)
         db.execute("INSERT INTO wallets(id,scope_type,scope_id,balance_credits) VALUES(?,?,?,?)", (wallet_id,"user",user_id,balance))
         db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,note) VALUES(?,?,?,?,?,?)", (new_id("led_"),wallet_id,balance,balance,"signup_grant",f"Free plan welcome credits: {balance}"))
@@ -78,8 +118,33 @@ def create_personal_wallet(user_id: str, plan_id: str = "free") -> dict[str, Any
 
 
 def active_plan(scope_type: str, scope_id: str) -> str:
-    row = one("SELECT plan_id FROM subscriptions WHERE scope_type=? AND scope_id=? AND status='active' ORDER BY created_at DESC LIMIT 1", (scope_type,scope_id))
+    row = one("SELECT plan_id FROM subscriptions WHERE scope_type=? AND scope_id=? AND status='active' AND (ends_at IS NULL OR ends_at>CURRENT_TIMESTAMP) ORDER BY COALESCE(starts_at,created_at) DESC LIMIT 1", (scope_type,scope_id))
     return str(row["plan_id"]) if row else "free"
+
+
+def _ensure_free_monthly_grant(user_id: str, wallet: dict[str, Any]) -> dict[str, Any]:
+    if active_plan("user", user_id) != "free":
+        return wallet
+    now = datetime.now(timezone.utc)
+    period_key = f"free:{now:%Y-%m}"
+    start = f"{now:%Y-%m}-01 00:00:00"
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute("SELECT id FROM credit_ledger WHERE wallet_id=? AND reference_type='free_period' AND reference_id=?", (wallet["id"],period_key)).fetchone()
+        if existing:
+            db.commit()
+            return dict(db.execute("SELECT * FROM wallets WHERE id=?", (wallet["id"],)).fetchone())
+        signup_this_month = db.execute("SELECT id FROM credit_ledger WHERE wallet_id=? AND event_type='signup_grant' AND created_at>=? LIMIT 1", (wallet["id"],start)).fetchone()
+        delta = 0 if signup_this_month else int(PLANS["free"]["included_credits"] or 0)
+        current = db.execute("SELECT balance_credits FROM wallets WHERE id=?", (wallet["id"],)).fetchone()
+        balance = int(current["balance_credits"] if current else 0)
+        after = balance + delta
+        if delta:
+            db.execute("UPDATE wallets SET balance_credits=? WHERE id=?", (after,wallet["id"]))
+        db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,reference_type,reference_id,note) VALUES(?,?,?,?,?,?,?,?)",
+                   (new_id("led_"),wallet["id"],delta,after,"monthly_free_grant","free_period",period_key,"Free monthly AI Credit" if delta else "Signup grant covers first Free period"))
+        db.commit()
+        return dict(db.execute("SELECT * FROM wallets WHERE id=?", (wallet["id"],)).fetchone())
 
 
 def wallet_for(*, user_id: str, organization_id: str | None = None) -> dict[str, Any]:
@@ -88,7 +153,8 @@ def wallet_for(*, user_id: str, organization_id: str | None = None) -> dict[str,
         if row:
             return row
     row = one("SELECT * FROM wallets WHERE scope_type='user' AND scope_id=?", (user_id,))
-    return row or create_personal_wallet(user_id, active_plan("user", user_id))
+    wallet = row or create_personal_wallet(user_id, active_plan("user", user_id))
+    return _ensure_free_monthly_grant(user_id, wallet)
 
 
 def ensure_credit(wallet: dict[str, Any], minimum: int = 1) -> None:
@@ -115,6 +181,7 @@ def charge_ai_usage(*, user_id: str, organization_id: str | None, department_id:
     )
     credits = int(quote.charged_credits)
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT balance_credits FROM wallets WHERE id=?", (wallet["id"],)).fetchone()
         balance = int(row["balance_credits"] if row else 0)
         if balance < credits:
@@ -147,9 +214,16 @@ def adjust_wallet(*, wallet_id: str, delta: int, event_type: str, note: str = ""
 def set_subscription(*, scope_type: str, scope_id: str, plan_id: str) -> dict[str, Any]:
     if plan_id not in PLANS:
         raise ValueError("Gói không hợp lệ")
-    execute("UPDATE subscriptions SET status='replaced' WHERE scope_type=? AND scope_id=? AND status='active'", (scope_type,scope_id))
     sub_id = new_id("sub_")
-    execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status) VALUES(?,?,?,?,?)", (sub_id,scope_type,scope_id,plan_id,"active"))
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("UPDATE subscriptions SET status='replaced' WHERE scope_type=? AND scope_id=? AND status='active'", (scope_type,scope_id))
+        ends_expr = None if plan_id in {"free", "organization"} else "+30 days"
+        if ends_expr:
+            db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status,starts_at,ends_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,datetime('now',?))", (sub_id,scope_type,scope_id,plan_id,"active",ends_expr))
+        else:
+            db.execute("INSERT INTO subscriptions(id,scope_type,scope_id,plan_id,status,starts_at,ends_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,NULL)", (sub_id,scope_type,scope_id,plan_id,"active"))
+        db.commit()
     return {"subscription_id":sub_id,"plan_id":plan_id}
 
 

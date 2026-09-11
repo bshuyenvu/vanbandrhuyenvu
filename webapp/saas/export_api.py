@@ -20,6 +20,9 @@ from .workflow_api import routes as workflow_routes
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
 STATIC_ADMIN = STATIC_ROOT / "admin-control.html"
 STATIC_BILLING = STATIC_ROOT / "billing.html"
+STATIC_DIGITIZE = STATIC_ROOT / "digitize.html"
+STATIC_REGISTER = STATIC_ROOT / "register.html"
+STATIC_SLIP = STATIC_ROOT / "processing-slip.html"
 
 
 def _error(message: str, status: int = 400) -> JSONResponse:
@@ -48,6 +51,18 @@ async def admin_control(_: Request) -> Response:
 
 async def billing_page(_: Request) -> Response:
     return await _static(STATIC_BILLING)
+
+
+async def digitize_page(_: Request) -> Response:
+    return await _static(STATIC_DIGITIZE)
+
+
+async def register_page(_: Request) -> Response:
+    return await _static(STATIC_REGISTER)
+
+
+async def processing_slip_page(_: Request) -> Response:
+    return await _static(STATIC_SLIP)
 
 
 async def export_docx_v2(request: Request) -> Response:
@@ -96,6 +111,9 @@ def routes() -> list[Route]:
     result = [
         Route("/admin-control", admin_control, methods=["GET"]),
         Route("/billing", billing_page, methods=["GET"]),
+        Route("/digitize", digitize_page, methods=["GET"]),
+        Route("/register", register_page, methods=["GET"]),
+        Route("/processing-slip", processing_slip_page, methods=["GET"]),
         Route("/api/v2/export/docx", export_docx_v2, methods=["POST"]),
     ]
     result.extend(workflow_routes())
