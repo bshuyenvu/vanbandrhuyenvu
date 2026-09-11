@@ -50,6 +50,26 @@ class ProductionHardeningTests(unittest.TestCase):
         grants = store.one("SELECT COUNT(*) n FROM credit_ledger WHERE wallet_id=? AND event_type='signup_grant'", (first["id"],))
         self.assertEqual(active["n"], 1)
         self.assertEqual(grants["n"], 1)
+    def test_personal_storage_quota_uses_plan(self):
+        from webapp.saas.storage import storage_summary
+        user_id = "usr_storage_plan"
+        store.execute("INSERT INTO users(id,email,password_hash,full_name,status,session_version) VALUES(?,?,?,?,?,0)", (user_id,"storage@example.com",hash_password("MatKhau123!"),"Storage User","active"))
+        store.create_personal_wallet(user_id, "free")
+        org = store.ensure_personal_workspace(user_id, "Storage User", "storage@example.com")
+        summary = storage_summary(user_id=user_id, organization_id=org["id"])
+        self.assertEqual(summary["total_bytes"], 100 * 1024 * 1024)
+        self.assertEqual(summary["used_bytes"], 0)
+
+    def test_personal_storage_quota_blocks_overflow(self):
+        from webapp.saas.storage import ensure_storage_capacity
+        user_id = "usr_storage_limit"
+        store.execute("INSERT INTO users(id,email,password_hash,full_name,status,session_version) VALUES(?,?,?,?,?,0)", (user_id,"limit@example.com",hash_password("MatKhau123!"),"Limit User","active"))
+        store.create_personal_wallet(user_id, "free")
+        org = store.ensure_personal_workspace(user_id, "Limit User", "limit@example.com")
+        store.execute("INSERT INTO document_attachments(id,document_id,organization_id,original_name,stored_name,mime_type,size_bytes,sha256,uploaded_by) VALUES(?,?,?,?,?,?,?,?,?)", ("att_big","doc_big",org["id"],"big.pdf","big.pdf","application/pdf",99*1024*1024,"0"*64,user_id))
+        with self.assertRaises(ValueError):
+            ensure_storage_capacity(user_id=user_id, organization_id=org["id"], incoming_bytes=2*1024*1024)
+
     def test_session_version_revokes_old_sessions(self):
         user_id = "usr_secure"
         store.execute(
@@ -69,6 +89,22 @@ class ProductionHardeningTests(unittest.TestCase):
         self.assertTrue(api._login_blocked(email, ip))
         api._clear_login_failures(email)
         self.assertFalse(api._login_blocked(email, ip))
+
+
+    def test_me_provisions_personal_workspace_idempotently(self):
+        user_id = "usr_personal_workspace"
+        store.execute(
+            "INSERT INTO users(id,email,password_hash,full_name,status,session_version) VALUES(?,?,?,?,?,0)",
+            (user_id, "personal@example.com", hash_password("MatKhau123!"), "Personal User", "active"),
+        )
+        token = create_session({"uid": user_id, "email": "personal@example.com", "sv": 0})
+        first = json.loads(asyncio.run(api.me(self._request(token))).body)
+        second = json.loads(asyncio.run(api.me(self._request(token))).body)
+        personal = [m for m in first["memberships"] if m.get("workspace_type") == "personal"]
+        self.assertEqual(len(personal), 1)
+        self.assertEqual(personal[0]["organization_name"], "Kho cá nhân — Personal User")
+        self.assertEqual(first["memberships"], second["memberships"])
+        self.assertEqual(store.one("SELECT COUNT(*) n FROM organizations WHERE owner_user_id=? AND workspace_type='personal'", (user_id,))["n"], 1)
 
 
     def test_free_monthly_grant_is_idempotent(self):
@@ -95,6 +131,27 @@ class ProductionHardeningTests(unittest.TestCase):
         self.assertEqual(summary["quota"]["requests_used"], 1)
         self.assertEqual(summary["quota"]["tokens_used"], 111)
         self.assertTrue(summary["quota"]["reset_at"].startswith("2099-10-01"))
+
+    def test_team_plan_rejects_personal_workspace_scope(self):
+        from webapp.saas import billing_api
+        user_id = "usr_team_scope"
+        store.execute("INSERT INTO users(id,email,password_hash,full_name,status,session_version) VALUES(?,?,?,?,?,0)", (user_id,"team@example.com",hash_password("MatKhau123!"),"Team User","active"))
+        store.create_personal_wallet(user_id, "free")
+        org = store.ensure_personal_workspace(user_id, "Team User", "team@example.com")
+        token = create_session({"uid": user_id, "email": "team@example.com", "sv": 0})
+        raw = json.dumps({"plan_id":"team","scope_type":"organization","scope_id":org["id"]}).encode()
+        sent = False
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type":"http.request","body":b"","more_body":False}
+            sent = True
+            return {"type":"http.request","body":raw,"more_body":False}
+        req = Request({"type":"http","method":"POST","path":"/api/v2/billing/orders","headers":[(b"authorization",f"Bearer {token}".encode()),(b"content-type",b"application/json")],"query_string":b"","client":("127.0.0.1",1234),"server":("test",80),"scheme":"http"}, receive)
+        response = asyncio.run(billing_api.create_order(req))
+        self.assertEqual(response.status_code, 409)
+        data = json.loads(response.body)
+        self.assertIn("Kho cá nhân", data["error"])
 
 
 class AttachmentTests(unittest.TestCase):

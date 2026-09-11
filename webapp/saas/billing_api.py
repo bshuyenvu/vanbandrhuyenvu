@@ -10,7 +10,7 @@ from starlette.routing import Route
 from .api import current_user, org_role, platform_admin
 from .catalog import PLANS
 from .security import new_id
-from .store import audit, connect
+from .store import audit, connect, one
 
 
 def _json(data: dict[str, Any], status: int = 200) -> JSONResponse:
@@ -48,10 +48,15 @@ async def create_order(request: Request):
     if scope_type == "user" and scope_id != user["id"]:
         return _error("Không thể mua gói cho tài khoản khác", 403)
     if scope_type == "organization":
+        workspace = one("SELECT workspace_type FROM organizations WHERE id=?", (scope_id,))
+        if not workspace:
+            return _error("Không tìm thấy cơ quan", 404)
+        if workspace.get("workspace_type") == "personal":
+            return _error("Gói Nhóm chỉ áp dụng cho cơ quan, không áp dụng cho Kho cá nhân", 409)
         if not org_role(user["id"], scope_id) and not platform_admin(user):
             return _error("Bạn không thuộc cơ quan này", 403)
         if plan_id != "team":
-            return _error("Tổ chức tự mua hiện chỉ hỗ trợ gói Team")
+            return _error("Cơ quan tự mua hiện chỉ hỗ trợ gói Nhóm")
     if scope_type not in {"user", "organization"}:
         return _error("scope_type không hợp lệ")
 
@@ -85,7 +90,7 @@ async def my_orders(request: Request):
 async def admin_orders(request: Request):
     user = current_user(request)
     if not user or not platform_admin(user):
-        return _error("Chỉ Platform Admin", 403)
+        return _error("Chỉ quản trị viên nền tảng", 403)
     status = request.query_params.get("status")
     with connect() as db:
         if status:
@@ -98,7 +103,7 @@ async def admin_orders(request: Request):
 async def confirm_order(request: Request):
     admin = current_user(request)
     if not admin or not platform_admin(admin):
-        return _error("Chỉ Platform Admin được xác nhận thanh toán", 403)
+        return _error("Chỉ quản trị viên nền tảng được xác nhận thanh toán", 403)
     order_id = request.path_params["order_id"]
     body = await request.json()
 
@@ -116,6 +121,7 @@ async def confirm_order(request: Request):
             db.rollback()
             return _error(f"Không thể xác nhận đơn ở trạng thái {order['status']}", 409)
 
+        # Lock order before changing subscription/wallet. A second confirmation cannot pass this update.
         changed = db.execute("UPDATE payment_orders SET status='processing' WHERE id=? AND status IN ('pending','review')", (order_id,)).rowcount
         if changed != 1:
             db.rollback()
@@ -138,7 +144,7 @@ async def confirm_order(request: Request):
         balance_after = current_balance + delta
         db.execute("UPDATE wallets SET balance_credits=? WHERE id=?", (balance_after,wallet_id))
         db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,reference_type,reference_id,note) VALUES(?,?,?,?,?,?,?,?)",
-                   (new_id("led_"),wallet_id,delta,balance_after,"plan_purchase","payment_order",order_id,f"Paid order {order_id} • {order['plan_id']}"))
+                   (new_id("led_"),wallet_id,delta,balance_after,"plan_purchase","payment_order",order_id,f"Đơn đã thanh toán {order_id} • {order['plan_id']}"))
         db.execute("UPDATE payment_orders SET status='paid',provider_reference=?,paid_at=CURRENT_TIMESTAMP WHERE id=?", (body.get("provider_reference"),order_id))
         db.commit()
 

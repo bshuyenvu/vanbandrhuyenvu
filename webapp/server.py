@@ -28,6 +28,7 @@ from saas.model_manager import choose_model  # noqa: E402
 from saas.store import active_plan, all_rows, charge_ai_usage, ensure_credit, one, wallet_for  # noqa: E402
 from saas.usage import ensure_usage_quota  # noqa: E402
 from saas.usage_api import routes as usage_routes  # noqa: E402
+from saas.storage_api import routes as storage_routes  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
@@ -84,14 +85,18 @@ def _ai_context(request: Request, body: dict[str, Any], task_type: str) -> dict[
 
     data_policy = "internal"
     if org_id:
-        org = one("SELECT data_policy FROM organizations WHERE id=?", (org_id,))
+        org = one("SELECT data_policy,workspace_type,owner_user_id FROM organizations WHERE id=?", (org_id,))
         if not org:
             raise AccessError("Không tìm thấy cơ quan/đơn vị", 404)
+        if org.get("workspace_type") == "personal" and org.get("owner_user_id") != user["id"]:
+            raise AccessError("Kho cá nhân không thuộc tài khoản này", 403)
         data_policy = str(org.get("data_policy") or "internal")
         if data_policy == "confidential" and os.getenv("VBHC_ALLOW_CONFIDENTIAL_EXTERNAL_AI", "false").lower() not in {"1", "true", "yes"}:
             data_policy = "restricted"
 
-    billing_scope = str(body.get("billing_scope") or ("organization" if org_id else "personal"))
+    personal_workspace = bool(org_id and org and org.get("workspace_type") == "personal")
+    # Phạm vi tính phí do server quyết định từ loại không gian, không tin giá trị do trình duyệt gửi lên.
+    billing_scope = "personal" if (not org_id or personal_workspace) else "organization"
     if billing_scope == "organization" and org_id:
         plan_id = active_plan("organization", org_id)
         wallet = wallet_for(user_id=user["id"], organization_id=org_id)
@@ -116,6 +121,7 @@ def _ai_context(request: Request, body: dict[str, Any], task_type: str) -> dict[
         "organization_id": org_id,
         "department_id": department_id,
         "billing_scope": billing_scope,
+        "billing_organization_id": quota_org_id,
         "plan_id": plan_id,
         "wallet": wallet,
         "data_policy": data_policy,
@@ -143,7 +149,7 @@ def _run_ai(*, ctx: dict[str, Any], task_type: str, system: str, prompt: str,
         user = ctx["user"]
         billing = charge_ai_usage(
             user_id=user["id"],
-            organization_id=ctx.get("organization_id"),
+            organization_id=ctx.get("billing_organization_id"),
             department_id=ctx.get("department_id"),
             provider=result.provider,
             model_name=result.model,
@@ -212,7 +218,7 @@ async def reply_workbench(_: Request) -> Response:
 
 
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.2-production", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.2.1-production", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -382,6 +388,7 @@ routes.extend(saas_routes())
 routes.extend(admin_routes())
 routes.extend(export_routes())
 routes.extend(usage_routes())
+routes.extend(storage_routes())
 app = Starlette(routes=routes)
 app.add_middleware(ProductionSecurityMiddleware)
 

@@ -16,6 +16,7 @@ from starlette.routing import Route
 
 from .api import current_user, require_org_permission
 from .security import new_id
+from .storage import ensure_storage_capacity
 from .store import all_rows, audit, connect, execute, one
 
 VALID_TRANSITIONS = {
@@ -174,7 +175,7 @@ async def upload_attachment(request: Request):
     user = current_user(request)
     org_id, doc_id = request.path_params["org_id"], request.path_params["doc_id"]
     if not user or not require_org_permission(user, org_id, "document.version")[0]:
-        return _error("Không có quyền đính kèm file", 403)
+        return _error("Không có quyền đính kèm tệp", 403)
     if not one("SELECT id FROM documents WHERE id=? AND organization_id=?", (doc_id,org_id)):
         return _error("Không tìm thấy văn bản", 404)
     try:
@@ -189,19 +190,25 @@ async def upload_attachment(request: Request):
     try:
         raw = base64.b64decode(encoded, validate=True)
     except Exception:
-        return _error("file_base64 không hợp lệ")
+        return _error("Dữ liệu tệp mã hóa không hợp lệ")
     max_bytes = max(1024 * 1024, int(os.getenv("VBHC_ATTACHMENT_MAX_BYTES", str(12 * 1024 * 1024))))
     if not raw:
-        return _error("File rỗng")
+        return _error("Tệp rỗng")
     if len(raw) > max_bytes:
-        return _error(f"File vượt quá {max_bytes // (1024 * 1024)} MB", 413)
+        return _error(f"Tệp vượt quá {max_bytes // (1024 * 1024)} MB", 413)
     if not _valid_attachment_content(ext, raw):
-        return _error("Nội dung file không khớp định dạng hoặc file bị hỏng", 422)
+        return _error("Nội dung tệp không khớp định dạng hoặc tệp bị hỏng", 422)
+    try:
+        ensure_storage_capacity(user_id=user["id"], organization_id=org_id, incoming_bytes=len(raw))
+    except PermissionError as exc:
+        return _error(str(exc), 403)
+    except ValueError as exc:
+        return _error(str(exc), 413)
     attachment_id = new_id("att_")
     root = _attachment_root()
     target_dir = (root / org_id / doc_id).resolve()
     if root not in target_dir.parents:
-        return _error("Đường dẫn lưu file không hợp lệ", 500)
+        return _error("Đường dẫn lưu tệp không hợp lệ", 500)
     target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     stored_name = attachment_id + ext
     target = target_dir / stored_name
@@ -223,14 +230,14 @@ async def download_attachment(request: Request):
     user = current_user(request)
     org_id, doc_id, attachment_id = request.path_params["org_id"], request.path_params["doc_id"], request.path_params["attachment_id"]
     if not user or not require_org_permission(user, org_id, "document.read")[0]:
-        return _error("Không có quyền tải file", 403)
+        return _error("Không có quyền tải tệp", 403)
     item = one("SELECT * FROM document_attachments WHERE id=? AND document_id=? AND organization_id=?", (attachment_id,doc_id,org_id))
     if not item:
-        return _error("Không tìm thấy file", 404)
+        return _error("Không tìm thấy tệp", 404)
     root = _attachment_root()
     target = (root / org_id / doc_id / item["stored_name"]).resolve()
     if root not in target.parents or not target.is_file():
-        return _error("File lưu trữ không còn tồn tại", 404)
+        return _error("Tệp lưu trữ không còn tồn tại", 404)
     return FileResponse(target, media_type=item["mime_type"], filename=item["original_name"], headers={"Cache-Control":"private, no-store"})
 
 

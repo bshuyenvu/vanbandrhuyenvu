@@ -42,7 +42,7 @@ def _authorized(request: Request, body: dict[str, Any]) -> tuple[bool, JSONRespo
 async def _static(path: Path) -> Response:
     if not path.is_file():
         return _error("Thiếu giao diện", 500)
-    return FileResponse(str(path), media_type="text/html; charset=utf-8")
+    return FileResponse(str(path), media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 async def admin_control(_: Request) -> Response:
@@ -69,7 +69,7 @@ async def export_docx_v2(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return _error("Body phải là JSON")
+        return _error("Nội dung yêu cầu phải ở định dạng JSON")
     ok, error = _authorized(request, body)
     if not ok:
         return error  # type: ignore[return-value]
@@ -80,7 +80,7 @@ async def export_docx_v2(request: Request) -> Response:
         return _error("Loại văn bản chưa được đăng ký", 404)
     if not doc_type.enabled_export:
         return _error(
-            f"{doc_type.name} đã có trong danh mục nhưng renderer Word chưa được kiểm định; hệ thống không xuất bằng template khác.",
+            f"{doc_type.name} đã có trong danh mục nhưng bộ tạo tệp Word chưa được kiểm định; hệ thống không dùng mẫu khác để thay thế.",
             422,
         )
 
@@ -92,7 +92,7 @@ async def export_docx_v2(request: Request) -> Response:
         elif doc_type.renderer == "party_reply":
             raw = build_party_reply(body)
         else:
-            return _error("Renderer chưa được hỗ trợ", 422)
+            return _error("Bộ tạo văn bản chưa được hỗ trợ", 422)
     except Exception as exc:
         return _error(f"Không tạo được DOCX: {exc}", 500)
 

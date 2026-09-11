@@ -13,7 +13,7 @@ from .catalog import MODEL_DEFAULTS, PLANS, PROJECT_NAME
 from .document_types import get_document_type, list_document_types
 from .rbac import has_permission, permissions_for
 from .security import create_session, hash_password, new_id, parse_session, verify_password
-from .store import all_rows, audit, connect, create_personal_wallet, execute, init_db, one
+from .store import all_rows, audit, connect, create_personal_wallet, ensure_personal_workspace, execute, init_db, one
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -171,7 +171,8 @@ async def me(request: Request):
     user = current_user(request)
     if not user:
         return _error("Chưa đăng nhập", 401)
-    memberships = all_rows("SELECT m.organization_id,o.name organization_name,m.department_id,m.role,m.status FROM memberships m JOIN organizations o ON o.id=m.organization_id WHERE m.user_id=?", (user["id"],))
+    ensure_personal_workspace(user["id"], user.get("full_name") or "", user.get("email") or "")
+    memberships = all_rows("SELECT m.organization_id,o.name organization_name,o.workspace_type,m.department_id,m.role,m.status FROM memberships m JOIN organizations o ON o.id=m.organization_id WHERE m.user_id=? ORDER BY CASE o.workspace_type WHEN 'personal' THEN 0 ELSE 1 END,o.name", (user["id"],))
     wallet = one("SELECT * FROM wallets WHERE scope_type='user' AND scope_id=?", (user["id"],))
     sub = one("SELECT plan_id,status,COALESCE(starts_at,created_at) starts_at,ends_at FROM subscriptions WHERE scope_type='user' AND scope_id=? AND status='active' AND (ends_at IS NULL OR ends_at>CURRENT_TIMESTAMP) ORDER BY COALESCE(starts_at,created_at) DESC LIMIT 1", (user["id"],))
     return _json({"ok": True, "user": user, "platform_admin": platform_admin(user), "memberships": memberships, "wallet": wallet, "subscription": sub})
@@ -184,7 +185,7 @@ async def plans(_: Request):
 async def activate_user(request: Request):
     admin = current_user(request)
     if not admin or not platform_admin(admin):
-        return _error("Chỉ Platform Admin được kích hoạt tài khoản", 403)
+        return _error("Chỉ quản trị viên nền tảng được kích hoạt tài khoản", 403)
     try:
         body = await request.json()
     except Exception:
@@ -217,7 +218,7 @@ async def create_organization(request: Request):
     org_id = new_id("org_")
     try:
         with connect() as db:
-            db.execute("INSERT INTO organizations(id,name,slug,owner_user_id,data_policy) VALUES(?,?,?,?,?)", (org_id,name,slug,user["id"],policy))
+            db.execute("INSERT INTO organizations(id,name,slug,owner_user_id,data_policy,workspace_type) VALUES(?,?,?,?,?,?)", (org_id,name,slug,user["id"],policy,"organization"))
             db.execute("INSERT INTO memberships(id,organization_id,user_id,department_id,role,status) VALUES(?,?,?,?,?,?)", (new_id("mem_"),org_id,user["id"],None,"organization_owner","active"))
             wallet_id = new_id("wal_")
             db.execute("INSERT INTO wallets(id,scope_type,scope_id,balance_credits) VALUES(?,?,?,0)", (wallet_id,"organization",org_id))
@@ -399,7 +400,13 @@ async def wallet(request: Request):
     if org_id:
         if not org_role(user["id"],org_id) and not platform_admin(user):
             return _error("Không có quyền", 403)
-        data = one("SELECT * FROM wallets WHERE scope_type='organization' AND scope_id=?", (org_id,))
+        workspace = one("SELECT workspace_type,owner_user_id FROM organizations WHERE id=?", (org_id,))
+        if workspace and workspace.get("workspace_type") == "personal":
+            if workspace.get("owner_user_id") != user["id"] and not platform_admin(user):
+                return _error("Kho cá nhân không thuộc tài khoản này", 403)
+            data = one("SELECT * FROM wallets WHERE scope_type='user' AND scope_id=?", (user["id"],))
+        else:
+            data = one("SELECT * FROM wallets WHERE scope_type='organization' AND scope_id=?", (org_id,))
     else:
         data = one("SELECT * FROM wallets WHERE scope_type='user' AND scope_id=?", (user["id"],))
     return _json({"ok": True, "wallet": data})
@@ -416,12 +423,12 @@ async def model_catalog(request: Request):
 async def update_model(request: Request):
     user = current_user(request)
     if not user or not platform_admin(user):
-        return _error("Chỉ Platform Admin được quản lý model", 403)
+        return _error("Chỉ quản trị viên nền tảng được quản lý mô hình AI", 403)
     model_id = request.path_params["model_id"]
     body = await request.json()
     current = one("SELECT * FROM ai_models WHERE id=?", (model_id,))
     if not current:
-        return _error("Không tìm thấy model", 404)
+        return _error("Không tìm thấy mô hình AI", 404)
     fields = ["display_name","tier","enabled","input_usd_per_million","cached_input_usd_per_million","output_usd_per_million","service_multiplier","daily_budget_usd"]
     values = {k: body[k] for k in fields if k in body}
     if values:

@@ -16,7 +16,7 @@ DB_PATH = Path(os.getenv("VBHC_DEV_DB", Path(__file__).resolve().parents[2] / "d
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,full_name TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',session_version INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL,slug TEXT UNIQUE NOT NULL,owner_user_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',data_policy TEXT NOT NULL DEFAULT 'internal',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL,slug TEXT UNIQUE NOT NULL,owner_user_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',data_policy TEXT NOT NULL DEFAULT 'internal',workspace_type TEXT NOT NULL DEFAULT 'organization',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS departments(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,parent_id TEXT,name TEXT NOT NULL,code TEXT,type TEXT NOT NULL DEFAULT 'department',status TEXT NOT NULL DEFAULT 'active');
 CREATE TABLE IF NOT EXISTS memberships(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,user_id TEXT NOT NULL,department_id TEXT,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS wallets(id TEXT PRIMARY KEY,scope_type TEXT NOT NULL,scope_id TEXT NOT NULL,balance_credits INTEGER NOT NULL DEFAULT 0,monthly_budget_credits INTEGER,hard_limit_credits INTEGER,UNIQUE(scope_type,scope_id));
@@ -45,9 +45,17 @@ def connect() -> sqlite3.Connection:
 def init_db() -> None:
     with connect() as db:
         db.executescript(SCHEMA)
+        # Lightweight forward migrations for existing SQLite deployments.
         user_cols = {r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()}
         if "session_version" not in user_cols:
             db.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0")
+        org_cols = {r[1] for r in db.execute("PRAGMA table_info(organizations)").fetchall()}
+        if "workspace_type" not in org_cols:
+            db.execute("ALTER TABLE organizations ADD COLUMN workspace_type TEXT NOT NULL DEFAULT 'organization'")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_personal_workspace_owner ON organizations(owner_user_id) WHERE workspace_type='personal'")
+        org_cols = {r[1] for r in db.execute("PRAGMA table_info(organizations)").fetchall()}
+        if "storage_quota_bytes" not in org_cols:
+            db.execute("ALTER TABLE organizations ADD COLUMN storage_quota_bytes INTEGER")
         doc_cols = {r[1] for r in db.execute("PRAGMA table_info(documents)").fetchall()}
         for col, ddl in (("intake_number", "INTEGER"), ("register_year", "INTEGER"), ("received_at", "TEXT")):
             if col not in doc_cols:
@@ -62,6 +70,7 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_email_time ON auth_attempts(email,created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_auth_attempts_ip_time ON auth_attempts(ip,created_at)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_reference_unique ON credit_ledger(wallet_id,reference_type,reference_id) WHERE reference_type IS NOT NULL AND reference_id IS NOT NULL")
+        # Keep subscription state deterministic: expire ended plans and retain only the newest active row per scope.
         db.execute("UPDATE subscriptions SET status='expired' WHERE status='active' AND ends_at IS NOT NULL AND ends_at<=CURRENT_TIMESTAMP")
         db.execute("""UPDATE subscriptions SET status='replaced'
                       WHERE status='active' AND id NOT IN (
@@ -98,6 +107,29 @@ def execute(sql: str, params: tuple = ()) -> None:
         db.commit()
 
 
+def ensure_personal_workspace(user_id: str, full_name: str = "", email: str = "") -> dict[str, Any]:
+    """Return an idempotent private document workspace for an individual account."""
+    label = (full_name or email or "Tài khoản cá nhân").strip()
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = db.execute("SELECT * FROM organizations WHERE owner_user_id=? AND workspace_type='personal' LIMIT 1", (user_id,)).fetchone()
+        if existing:
+            org_id = existing["id"]
+        else:
+            org_id = new_id("org_")
+            slug = f"personal-{user_id[-16:]}"
+            db.execute("INSERT INTO organizations(id,name,slug,owner_user_id,status,data_policy,workspace_type) VALUES(?,?,?,?,?,?,?)",
+                       (org_id, f"Kho cá nhân — {label}", slug, user_id, "active", "internal", "personal"))
+        member = db.execute("SELECT id FROM memberships WHERE organization_id=? AND user_id=? LIMIT 1", (org_id,user_id)).fetchone()
+        if member:
+            db.execute("UPDATE memberships SET role='organization_owner',status='active',department_id=NULL WHERE id=?", (member["id"],))
+        else:
+            db.execute("INSERT INTO memberships(id,organization_id,user_id,department_id,role,status) VALUES(?,?,?,?,?,?)",
+                       (new_id("mem_"),org_id,user_id,None,"organization_owner","active"))
+        db.commit()
+        return dict(db.execute("SELECT * FROM organizations WHERE id=?", (org_id,)).fetchone())
+
+
 def create_personal_wallet(user_id: str, plan_id: str = "free") -> dict[str, Any]:
     plan = PLANS.get(plan_id, PLANS["free"])
     wallet_id = new_id("wal_")
@@ -112,7 +144,7 @@ def create_personal_wallet(user_id: str, plan_id: str = "free") -> dict[str, Any
             db.commit()
             return dict(existing)
         db.execute("INSERT INTO wallets(id,scope_type,scope_id,balance_credits) VALUES(?,?,?,?)", (wallet_id,"user",user_id,balance))
-        db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,note) VALUES(?,?,?,?,?,?)", (new_id("led_"),wallet_id,balance,balance,"signup_grant",f"Free plan welcome credits: {balance}"))
+        db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,note) VALUES(?,?,?,?,?,?)", (new_id("led_"),wallet_id,balance,balance,"signup_grant",f"Tín dụng chào mừng gói Miễn phí: {balance}"))
         db.commit()
         return dict(db.execute("SELECT * FROM wallets WHERE id=?", (wallet_id,)).fetchone())
 
@@ -142,7 +174,7 @@ def _ensure_free_monthly_grant(user_id: str, wallet: dict[str, Any]) -> dict[str
         if delta:
             db.execute("UPDATE wallets SET balance_credits=? WHERE id=?", (after,wallet["id"]))
         db.execute("INSERT INTO credit_ledger(id,wallet_id,delta_credits,balance_after,event_type,reference_type,reference_id,note) VALUES(?,?,?,?,?,?,?,?)",
-                   (new_id("led_"),wallet["id"],delta,after,"monthly_free_grant","free_period",period_key,"Free monthly AI Credit" if delta else "Signup grant covers first Free period"))
+                   (new_id("led_"),wallet["id"],delta,after,"monthly_free_grant","free_period",period_key,"Tín dụng AI hằng tháng của gói Miễn phí" if delta else "Tín dụng đăng ký áp dụng cho kỳ Miễn phí đầu tiên"))
         db.commit()
         return dict(db.execute("SELECT * FROM wallets WHERE id=?", (wallet["id"],)).fetchone())
 
@@ -159,7 +191,7 @@ def wallet_for(*, user_id: str, organization_id: str | None = None) -> dict[str,
 
 def ensure_credit(wallet: dict[str, Any], minimum: int = 1) -> None:
     if int(wallet.get("balance_credits") or 0) < minimum:
-        raise ValueError("AI Credit đã hết. Vui lòng nâng gói hoặc nạp thêm credit.")
+        raise ValueError("Tín dụng AI đã hết. Vui lòng nâng gói hoặc nạp thêm tín dụng.")
 
 
 def charge_ai_usage(*, user_id: str, organization_id: str | None, department_id: str | None,
@@ -170,7 +202,7 @@ def charge_ai_usage(*, user_id: str, organization_id: str | None, department_id:
     if not model:
         model = one("SELECT * FROM ai_models WHERE model_name=? AND enabled=1", (model_name,))
     if not model:
-        raise ValueError(f"Model chưa được đăng ký/đang bị tắt: {provider}/{model_name}")
+        raise ValueError(f"Mô hình AI chưa được đăng ký hoặc đang bị tắt: {provider}/{model_name}")
     quote = quote_usage(
         input_tokens=int(usage.get("input_tokens") or 0),
         cached_tokens=int(usage.get("cached_tokens") or 0),
