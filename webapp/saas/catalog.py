@@ -49,7 +49,7 @@ MODEL_DEFAULTS = {
     },
     "gpt-luna": {
         "provider": "openai", "model_name": "gpt-5.6-luna",
-        "display_name": "GPT-5.6 Luna", "tier": "economy",
+        "display_name": "GPT-5.6 Luna", "tier": "standard",
         "input_usd_per_million": Decimal("0.20"), "cached_input_usd_per_million": Decimal("0.02"),
         "output_usd_per_million": Decimal("1.20"), "service_multiplier": Decimal("1.30"), "enabled": True
     },
