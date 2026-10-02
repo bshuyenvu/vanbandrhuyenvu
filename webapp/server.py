@@ -30,10 +30,14 @@ from saas.usage import ensure_usage_quota  # noqa: E402
 from saas.usage_api import routes as usage_routes  # noqa: E402
 from saas.storage_api import routes as storage_routes  # noqa: E402
 from saas.intake_api import routes as intake_routes  # noqa: E402
+from advanced.api import routes as advanced_routes  # noqa: E402
 
 AI = AIRouter()
 STATIC_INDEX = HERE / "static" / "index.html"
 STATIC_CONSOLE = HERE / "static" / "console.html"
+STATIC_EDITOR = HERE / "static" / "editor-v10.html"
+STATIC_MANIFEST = HERE / "static" / "manifest.webmanifest"
+STATIC_SW = HERE / "static" / "sw.js"
 
 ANALYZE_SYSTEM = """Bạn là trợ lý văn thư Việt Nam. Nhiệm vụ là phân tích văn bản đến để hỗ trợ cán bộ soạn văn bản trả lời.
 Không được bịa số liệu, tên, chức vụ, số văn bản, thời hạn hoặc căn cứ pháp lý. Nếu không thấy rõ thì để chuỗi rỗng hoặc đưa vào missing_data.
@@ -184,6 +188,11 @@ async def home(_: Request) -> Response:
    b.innerHTML='◉ Lượt & Token của tôi'; b.onclick=function(){location.href='/usage'};
    plans.insertAdjacentElement('afterend',b);
  }
+ if(plans && !document.getElementById('editorNav')){
+   const e=document.createElement('button'); e.id='editorNav'; e.className='nav';
+   e.innerHTML='✎ AI Word V10'; e.onclick=function(){location.href='/editor'};
+   plans.insertAdjacentElement('beforebegin',e);
+ }
  const credit=document.getElementById('creditPill');
  if(credit){credit.style.cursor='pointer';credit.title='Xem lượt, token và AI Credit';credit.onclick=function(){location.href='/usage'}}
 })();
@@ -218,8 +227,28 @@ async def reply_workbench(_: Request) -> Response:
     return HTMLResponse(html.replace("</head>", bootstrap + "</head>"))
 
 
+async def editor(_: Request) -> Response:
+    if not STATIC_EDITOR.is_file():
+        return _err("Thiếu webapp/static/editor-v10.html", 500)
+    html = STATIC_EDITOR.read_text(encoding="utf-8")
+    gate = """<script>(function(){if(!localStorage.getItem('hv_vbai_token')){location.replace('/');}})();</script>"""
+    return HTMLResponse(html.replace("</head>", gate + "</head>"))
+
+
+async def manifest(_: Request) -> Response:
+    if not STATIC_MANIFEST.is_file():
+        return _err("Thiếu manifest PWA", 404)
+    return FileResponse(STATIC_MANIFEST, media_type="application/manifest+json")
+
+
+async def service_worker(_: Request) -> Response:
+    if not STATIC_SW.is_file():
+        return _err("Thiếu service worker", 404)
+    return FileResponse(STATIC_SW, media_type="application/javascript", headers={"Service-Worker-Allowed": "/"})
+
+
 async def health(_: Request) -> Response:
-    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "2.3.1-production", "ai": AI.status()})
+    return JSONResponse({"ok": True, "service": "huyen-vu-van-ban-ai", "project": PROJECT_NAME, "version": "10.0.0", "ai": AI.status()})
 
 
 async def ai_status(_: Request) -> Response:
@@ -378,6 +407,9 @@ async def export_docx(request: Request) -> Response:
 routes = [
     Route("/", home, methods=["GET"]),
     Route("/reply", reply_workbench, methods=["GET"]),
+    Route("/editor", editor, methods=["GET"]),
+    Route("/manifest.webmanifest", manifest, methods=["GET"]),
+    Route("/sw.js", service_worker, methods=["GET"]),
     Route("/healthz", health, methods=["GET"]),
     Route("/api/ai/status", ai_status, methods=["GET"]),
     Route("/api/incoming/analyze", analyze, methods=["POST"]),
@@ -391,6 +423,7 @@ routes.extend(export_routes())
 routes.extend(usage_routes())
 routes.extend(storage_routes())
 routes.extend(intake_routes())
+routes.extend(advanced_routes())
 app = Starlette(routes=routes)
 app.add_middleware(ProductionSecurityMiddleware)
 

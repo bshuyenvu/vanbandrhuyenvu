@@ -1,17 +1,23 @@
 # Huyền Vũ Văn Bản AI
 
-**Production V2.3.1** — nền tảng quản lý văn bản đến/đi, workflow cơ quan/phòng-khoa, soạn & kiểm định AI, quản lý lượt/token/AI Credit, billing và hồ sơ đính kèm private.
+**V10 — AI Word GitHub-first** — trình soạn thảo văn bản tiếng Việt tích hợp reviewer, citation, DOCX chuyên nghiệp, template, research, collaboration, PWA/offline, dictation y khoa và one-click finalize.
 
-- Web production: `vanban-ai.huyenvu.cloud`
-- Runtime nhẹ: Starlette + SQLite WAL; schema PostgreSQL đã chuẩn bị trong `webapp/saas/schema.sql`.
-- File hồ sơ production lưu ngoài Git trên SSD thông qua `VBHC_FILE_ROOT`; download luôn qua API xác thực.
-- AI hiện hỗ trợ Gemini/OpenAI router, quota theo kỳ, cost ledger, protected facts và policy Public/Internal/Confidential/Restricted.
-- Quản trị: Platform Admin, RBAC cơ quan, phòng/khoa, thành viên, workflow, audit log, model manager và billing.
-- Security V2.3: session revocation, brute-force guard, request-size guard, security headers/CSP/HSTS và kiểm tra chữ ký tệp đính kèm riêng tư.
-- Tiếp nhận V2.3: OCR nhiều tệp theo hàng đợi, SHA-256 chống trùng trước AI, cảnh báo hồ sơ gần trùng, đề xuất phòng/khoa và ghi sổ nguyên khối.
-- Điều hành V2.3.1: bảng công việc theo vai trò, cảnh báo 24/48 giờ và quá hạn, hàng chờ duyệt/phát hành, khóa thao tác ngoài phạm vi được giao.
+- Editor: `/editor`; API mới từ `/api/v3/*` đến `/api/v10/*`.
+- **GitHub là source of truth cho tài liệu V10**: source, document, metadata, version, review branch và PR đều commit GitHub.
+- Production bắt buộc `VBHC_GITHUB_DOCS_REPO` trỏ tới **repository private**; mã sẽ từ chối lưu tài liệu vào repo public khi `VBHC_ENV=production`.
+- `VBHC_GITHUB_TOKEN` chỉ được cấp qua secret runtime, tuyệt đối không commit vào repository.
+- V3: AI Reviewer/Track Changes + PubMed/Crossref Citation Engine.
+- V4: DOCX Professional Engine — header/footer, section, page number, TOC, table, caption, footnote.
+- V5: Template Builder — công văn, báo cáo, bệnh án, luận văn, bài báo.
+- V6: Research Assistant — PubMed/Crossref → Evidence Table → chèn vào văn bản.
+- V7: Collaboration — GitHub save/version, comment, review, branch và pull request.
+- V8: PWA/offline autosave; khi có mạng, hàng chờ được đồng bộ lại GitHub.
+- V9: Web Speech `vi-VN` + chuẩn hóa thuật ngữ đọc chính tả y khoa.
+- V10: kiểm tra → sửa an toàn → xác minh DOI/PMID → định dạng → DOCX + Print-to-PDF.
 
-Chi tiết V2 xem `doc/HUYEN-VU-VAN-BAN-AI-V2.md` và `webapp/README.md`. Phần bên dưới là tài liệu **legacy V1/MCP** vẫn được giữ để tương thích công cụ cũ.
+Web production hiện hữu: `vanban-ai.huyenvu.cloud`. Workflow V2.3.1/Legacy V1 phía dưới được giữ để tương thích trong giai đoạn chuyển đổi; tài liệu mới của editor V10 không dùng `VBHC_FILE_ROOT`.
+
+Chi tiết xem `doc/V3-V10-AI-WORD.md`, `doc/HUYEN-VU-VAN-BAN-AI-V2.md` và `webapp/README.md`. Phần bên dưới là tài liệu **legacy V1/MCP**.
 
 ---
 
