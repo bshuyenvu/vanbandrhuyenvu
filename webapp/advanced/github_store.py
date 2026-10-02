@@ -17,6 +17,8 @@ class GitHubStore:
         self.token = token or os.getenv("VBHC_GITHUB_TOKEN", "")
         self.repo = repo or os.getenv("VBHC_GITHUB_DOCS_REPO", os.getenv("VBHC_GITHUB_REPO", "bshuyenvu/vanbandrhuyenvu"))
         self.branch = branch or os.getenv("VBHC_GITHUB_DOCS_BRANCH", "documents")
+        self.production = os.getenv("VBHC_ENV", "development").lower() == "production"
+        self._repo_policy_checked = False
         if not self.token:
             raise GitHubStoreError("Thiếu VBHC_GITHUB_TOKEN")
 
@@ -33,7 +35,16 @@ class GitHubStore:
             payload = exc.read().decode("utf-8", "replace")
             raise GitHubStoreError(f"GitHub {exc.code}: {payload[:300]}") from exc
 
+    def _assert_repo_policy(self) -> None:
+        if self._repo_policy_checked:
+            return
+        meta = self._request("GET", f"/repos/{self.repo}")
+        if self.production and not bool(meta.get("private")):
+            raise GitHubStoreError("Production bắt buộc VBHC_GITHUB_DOCS_REPO là repository private")
+        self._repo_policy_checked = True
+
     def ensure_branch(self) -> None:
+        self._assert_repo_policy()
         encoded = urllib.parse.quote(self.branch, safe="")
         try:
             self._request("GET", f"/repos/{self.repo}/git/ref/heads/{encoded}"); return
@@ -70,6 +81,7 @@ class GitHubStore:
         return {"repo": self.repo, "branch": self.branch, "path": base + "/document.md", "commit": (result.get("commit") or {}).get("sha")}
 
     def create_review_branch(self, name: str, base: str = "main") -> str:
+        self._assert_repo_policy()
         branch = "review/" + _slug(name)
         ref = self._request("GET", f"/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(base, safe='')}")
         try: self._request("POST", f"/repos/{self.repo}/git/refs", {"ref": f"refs/heads/{branch}", "sha": ref["object"]["sha"]})
@@ -78,4 +90,16 @@ class GitHubStore:
         return branch
 
     def open_pr(self, title: str, head: str, base: str = "main", body: str = "") -> dict:
+        self._assert_repo_policy()
         return self._request("POST", f"/repos/{self.repo}/pulls", {"title": title, "head": head, "base": base, "body": body})
+
+    def comment_pr(self, number: int, body: str) -> dict:
+        self._assert_repo_policy()
+        return self._request("POST", f"/repos/{self.repo}/issues/{int(number)}/comments", {"body": body})
+
+    def review_pr(self, number: int, body: str, event: str = "COMMENT") -> dict:
+        self._assert_repo_policy()
+        event = event.upper()
+        if event not in {"COMMENT", "APPROVE", "REQUEST_CHANGES"}:
+            raise GitHubStoreError("event review không hợp lệ")
+        return self._request("POST", f"/repos/{self.repo}/pulls/{int(number)}/reviews", {"body": body, "event": event})

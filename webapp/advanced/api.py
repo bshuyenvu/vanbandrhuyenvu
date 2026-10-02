@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import os
 from typing import Any
 
@@ -28,7 +29,7 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 
 
 def _user(request: Request):
-    from webapp.saas.api import current_user
+    from saas.api import current_user
     user = current_user(request)
     allow = os.getenv("VBHC_ALLOW_ANON_ADVANCED", "false").lower() in {"1","true","yes"}
     return user if user else ({"id":"anonymous","email":"anonymous"} if allow else None)
@@ -40,8 +41,8 @@ async def capabilities(_: Request):
         "v4": ["header_footer", "sections", "page_numbers", "toc", "tables", "captions", "footnotes"],
         "v5": ["cong_van", "bao_cao", "benh_an", "luan_van", "bai_bao"],
         "v6": ["pubmed", "crossref", "evidence_table"],
-        "v7": ["github_save", "review_branch", "pull_request"],
-        "v8": ["pwa", "offline_queue", "github_sync"],
+        "v7": ["github_save", "comment", "review", "review_branch", "pull_request"],
+        "v8": ["pwa", "offline_autosave", "offline_queue", "github_sync"],
         "v9": ["vi-VN_web_speech", "medical_normalizer"],
         "v10": ["audit", "safe_fix", "citation_review", "docx", "print_pdf"],
     }})
@@ -132,16 +133,46 @@ async def collaboration_pr(request: Request):
     return _json({"ok": True, "branch": branch, "pull_request": {"number": pr.get("number"), "url": pr.get("html_url")}})
 
 
+async def collaboration_comment(request: Request):
+    user = _user(request)
+    if not user: return _error("Chưa đăng nhập", 401)
+    body = await request.json(); number = int(body.get("pr_number") or 0); comment = str(body.get("comment") or "").strip()
+    if number < 1 or not comment: return _error("Thiếu pr_number hoặc comment")
+    try: result = GitHubStore().comment_pr(number, comment)
+    except GitHubStoreError as exc: return _error(str(exc), 503)
+    return _json({"ok": True, "comment": {"id": result.get("id"), "url": result.get("html_url")}})
+
+
+async def collaboration_review(request: Request):
+    user = _user(request)
+    if not user: return _error("Chưa đăng nhập", 401)
+    body = await request.json(); number = int(body.get("pr_number") or 0); note = str(body.get("body") or "").strip(); event = str(body.get("event") or "COMMENT")
+    if number < 1: return _error("Thiếu pr_number")
+    try: result = GitHubStore().review_pr(number, note, event)
+    except GitHubStoreError as exc: return _error(str(exc), 503)
+    return _json({"ok": True, "review": {"id": result.get("id"), "state": result.get("state"), "url": result.get("html_url")}})
+
+
 async def voice_normalize(request: Request):
     if not _user(request): return _error("Chưa đăng nhập", 401)
     body = await request.json(); return _json({"ok": True, "text": normalize_vi_medical(str(body.get("text") or ""))})
 
 
+def _verify_citations(text: str) -> dict:
+    dois = list(dict.fromkeys(re.findall(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", text, re.I)))[:20]
+    pmids = list(dict.fromkeys(re.findall(r"PMID\s*:?\s*(\d{5,9})", text, re.I)))[:20]
+    doi_checks = [validate_doi(x.rstrip(".,;)]")) for x in dois]
+    pmid_checks = [validate_pmid(x) for x in pmids]
+    valid = sum(1 for x in doi_checks + pmid_checks if x.get("valid"))
+    return {"doi": doi_checks, "pmid": pmid_checks, "checked": len(doi_checks) + len(pmid_checks), "valid": valid}
+
+
 async def finalize(request: Request):
     if not _user(request): return _error("Chưa đăng nhập", 401)
     body = await request.json(); text = str(body.get("text") or "")
+    citation_checks = _verify_citations(text) if bool(body.get("verify_citations", True)) else {"doi": [], "pmid": [], "checked": 0, "valid": 0}
     result = finalize_document(text, title=str(body.get("title") or "Văn bản"), mode=str(body.get("mode") or "general"), auto_fix_safe=bool(body.get("auto_fix_safe", True)), spec=body.get("spec"))
-    return _json({"ok": True, "review": result["review"], "text": result["text"], "changes": result["changes"], "docx_base64": base64.b64encode(result["docx"]).decode("ascii"), "print_html": result["print_html"]})
+    return _json({"ok": True, "review": result["review"], "citation_checks": citation_checks, "text": result["text"], "changes": result["changes"], "docx_base64": base64.b64encode(result["docx"]).decode("ascii"), "print_html": result["print_html"]})
 
 
 def routes():
@@ -152,6 +183,9 @@ def routes():
         Route("/api/v5/templates", templates, methods=["GET"]), Route("/api/v5/templates/build", template_build, methods=["POST"]),
         Route("/api/v4/docx", docx_export, methods=["POST"]), Route("/api/v6/research/search", research_search, methods=["POST"]),
         Route("/api/v6/research/table", research_table, methods=["POST"]), Route("/api/v7/documents/save", document_save, methods=["POST"]),
-        Route("/api/v7/collaboration/pr", collaboration_pr, methods=["POST"]), Route("/api/v9/voice/normalize", voice_normalize, methods=["POST"]),
+        Route("/api/v7/collaboration/pr", collaboration_pr, methods=["POST"]),
+        Route("/api/v7/collaboration/comment", collaboration_comment, methods=["POST"]),
+        Route("/api/v7/collaboration/review", collaboration_review, methods=["POST"]),
+        Route("/api/v9/voice/normalize", voice_normalize, methods=["POST"]),
         Route("/api/v10/finalize", finalize, methods=["POST"]),
     ]
