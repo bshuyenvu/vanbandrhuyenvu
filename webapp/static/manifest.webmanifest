@@ -1,0 +1,10 @@
+{
+  "name": "Huyền Vũ AI Word",
+  "short_name": "HV AI Word",
+  "start_url": "/editor",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#0f172a",
+  "lang": "vi"
+}
